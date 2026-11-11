@@ -184,16 +184,38 @@
   let accumulator = 0, bgCanvas = null;
   let recorder=null, chunks=[], recording=false, finishedAt=-1;
   let audioContext=null, audioDestination=null, toastTimeout;
-  // Realistic Taut String Audio Engine
-  const NUM_SNAP_BUFFERS = 12;
-  const MAX_CONCURRENT_SNAP_VOICES = 4;
-  const SNAP_MICRO_SPACING = 0.016; // 16ms between audible snaps in a burst
-  const MAX_BURST_QUEUE_LATENCY = 0.048; // 48ms maximum queue latency window
+  // BallBattlee Custom SFX Pack Manifest
+  const SFX_MANIFEST = {
+    string_snap_01: 'sfx/string_snap_01.wav',
+    string_snap_02: 'sfx/string_snap_02.wav',
+    string_snap_03: 'sfx/string_snap_03.wav',
+    string_snap_04: 'sfx/string_snap_04.wav',
+    arena_wall_hit_01: 'sfx/arena_wall_hit_01.wav',
+    arena_wall_hit_02: 'sfx/arena_wall_hit_02.wav',
+    ball_collision_01: 'sfx/ball_collision_01.wav',
+    ball_collision_02: 'sfx/ball_collision_02.wav',
+    circle_growth: 'sfx/circle_growth.wav',
+    speed_boost: 'sfx/speed_boost.wav',
+    participant_eliminated: 'sfx/participant_eliminated.wav',
+    final_duel: 'sfx/final_duel.wav',
+    winner_reveal: 'sfx/winner_reveal.wav',
+    battle_start: 'sfx/battle_start.wav',
+    ui_select: 'sfx/ui_select.wav',
+    near_miss_whoosh: 'sfx/near_miss_whoosh.wav'
+  };
 
-  let snapBuffers=[], ripBus=null, ripOutput=null, audioReady=Promise.resolve();
-  let nextAvailableSnapTime=0, snapVariationCounter=0;
-  const activeSnapVoices=[];
-  let lastCollisionTime=0, lastEliminationTime=0, duelClock=0, mark=0;
+  const sfxBuffers = new Map();
+  let snapBuffers = [], ripBus = null, ripOutput = null, audioReady = Promise.resolve();
+  const activeSnapVoices = [];
+  let lastSnapPlayTime = -10;
+  const snappedStrandUids = new Set();
+  let nextStrandUid = 1;
+  let finalDuelSoundPlayed = false;
+  let deadlineSoundPlayed = false;
+  let lastSpeedPhase = 1;
+  let lastBallCollisionSoundTime = -10;
+  let lastNearMissSoundTime = -10;
+  let lastCollisionTime = 0, lastEliminationTime = 0, duelClock = 0, mark = 0;
   let colorTheme = 'neon';
   const config = () => ({
     title:$('headline').value.trim() || 'WHO WILL WIN?',
@@ -313,6 +335,9 @@
     };
   }
   function setRunning(run){
+    if(run && !simRunning && elapsed < 0.15){
+      playSfx('battle_start', { volume: 0.88 });
+    }
     simRunning=run;
     $('playText').textContent=run?'Pause simulation':finished?'Replay simulation':'Start simulation';
     $('playIcon').textContent=run?'Ⅱ':'▶';
@@ -335,7 +360,8 @@
           owner,k,density,angle,cosAngle,sinAngle,
           bx:CENTER.x+cosAngle*(CENTER.r-1),
           by:CENTER.y+sinAngle*(CENTER.r-1),
-          cutAt:-1,cutR:0,generation:k
+          cutAt:-1,cutR:0,generation:k,
+          uid:`${owner}_${k}_0`
         };
         threads.push(strand);
         ballThreads[owner].push(strand);
@@ -358,7 +384,9 @@
       strand.sinAngle=Math.sin(strand.angle);
       strand.bx=CENTER.x+strand.cosAngle*(CENTER.r-1);
       strand.by=CENTER.y+strand.sinAngle*(CENTER.r-1);
-      strand.generation=ball.nextThreadIndex++;strand.cutAt=-1;strand.cutR=0;born++;
+      strand.generation=ball.nextThreadIndex++;strand.cutAt=-1;strand.cutR=0;
+      strand.uid=`${ball.id}_${strand.k}_${strand.generation}`;
+      born++;
     }
     stringsGained+=born;
     return born;
@@ -463,6 +491,15 @@
       if(!ball.wallContact){
         growBallWall(ball);addThreads(ball,WALL_STRING_BONUS,Math.atan2(ny,nx));
         ball.wallContact=true;
+        if(elapsed - (ball.lastWallSoundTime || -1) >= 0.080){
+          ball.lastWallSoundTime = elapsed;
+          const wallSfx = Math.random() < 0.5 ? 'arena_wall_hit_01' : 'arena_wall_hit_02';
+          playSfx(wallSfx, { volume: 0.88, playbackRate: 0.96 + Math.random() * 0.08 });
+        }
+        if(elapsed - (ball.lastGrowthSoundTime || -1) >= 0.120){
+          ball.lastGrowthSoundTime = elapsed;
+          playSfx('circle_growth', { volume: 0.75, playbackRate: 0.98 + Math.random() * 0.04 });
+        }
       }
       ball.vx-=1.88*vdot*nx;ball.vy-=1.88*vdot*ny;
     }
@@ -485,6 +522,13 @@
     stopRip();
     seed=50483;elapsed=0;finished=false;winner=null;finishedAt=-1;lastCollisionTime=0;lastEliminationTime=0;duelClock=0;pairContacts.clear();stringsGained=0;mark=0;particles=[];rings=[];announcements=[];cutCount=0;
     accumulator=0;
+    snappedStrandUids.clear();
+    finalDuelSoundPlayed=false;
+    deadlineSoundPlayed=false;
+    lastSpeedPhase=1;
+    lastBallCollisionSoundTime=-10;
+    lastNearMissSoundTime=-10;
+    lastSnapPlayTime=-10;
     if(musicAudio){musicAudio.pause();musicAudio.currentTime=0;if(autoStart)startMusic();}
     balls=slots.map((slot,i)=>makeBall(slot,i,slots.length));createThreads();
     initBgCanvas();
@@ -508,74 +552,41 @@
     const dur=config().duration;$('durationLabel').textContent=`${Math.floor(dur/60)}:${String(dur%60).padStart(2,'0')}`;
     $('timelineProgress').style.width=`${clamp(elapsed/dur*100,0,100)}%`;
   }
-  function initSnapBuffers(ac) {
-    if (snapBuffers.length === NUM_SNAP_BUFFERS) return;
-    snapBuffers = [];
-    const sampleRate = ac.sampleRate || 48000;
-    const duration = 0.095; // 95 ms - fast, crisp taut snap
-    const numSamples = Math.floor(sampleRate * duration);
+  async function loadSfxAsset(key, path, ac){
+    let arrayBuffer = null;
+    try {
+      const res = await fetch(path);
+      if (res.ok) arrayBuffer = await res.arrayBuffer();
+    } catch(e) {}
 
-    for (let v = 0; v < NUM_SNAP_BUFFERS; v++) {
-      const audioBuf = ac.createBuffer(1, numSamples, sampleRate);
-      const channel = audioBuf.getChannelData(0);
-
-      // Micro-variation parameters based on thin high-tension filament acoustics
-      const baseTension = 1.0 + ((v % 5) - 2) * 0.035;
-      const fStart = (2750 + ((v * 197) % 380)) * baseTension;
-      const fEnd = (1420 + ((v * 131) % 190)) * baseTension;
-      const pitchDecayTime = 0.013 + ((v * 37) % 6) * 0.001; // 13-18 ms pitch dive
-      const amplitudeDecay = 0.042 + ((v * 59) % 8) * 0.002; // 42-56 ms decay
-      const snapBrightness = 0.52 + ((v * 73) % 5) * 0.04;
-
-      let phase1 = 0;
-      let phase2 = 0;
-      let prevNoise = 0;
-
-      for (let i = 0; i < numSamples; i++) {
-        const t = i / sampleRate;
-
-        // 1. Initial rupture impulse (sharp high-frequency snap, first 2.5 ms)
-        const whiteNoise = (Math.random() * 2 - 1);
-        const snapCrack = whiteNoise - prevNoise * 0.82;
-        prevNoise = whiteNoise;
-        const crackEnv = Math.exp(-t / 0.0022); // 2.2 ms decay
-        const transient = snapCrack * crackEnv * snapBrightness;
-
-        // 2. Initial micro-shockwave (first 1.2 ms asymmetric pulse)
-        let shockwave = 0;
-        if (t < 0.0012) {
-          shockwave = Math.sin((t / 0.0012) * Math.PI) * 0.42;
-        }
-
-        // 3. Elastic tension dive ("TWING" body)
-        const curFreq = fEnd + (fStart - fEnd) * Math.exp(-t / pitchDecayTime);
-        phase1 += (2 * Math.PI * curFreq) / sampleRate;
-
-        // Dispersion overtone (second transverse mode, slightly inharmonic)
-        const overtoneFreq = curFreq * 2.38;
-        phase2 += (2 * Math.PI * overtoneFreq) / sampleRate;
-
-        const bodyWave = Math.sin(phase1 + 0.3 * Math.sin(2 * phase1));
-        const s2 = Math.sin(phase2);
-        const overtoneEnv = Math.exp(-t / 0.018); // overtone decays rapidly
-
-        const bodySignal = (bodyWave * 0.72 + s2 * 0.28 * overtoneEnv);
-
-        // Amplitude envelope: instant attack (<0.4 ms), exponential decay
-        const attack = Math.min(1, t / 0.0004);
-        const mainEnv = attack * Math.exp(-t / amplitudeDecay);
-
-        // Clean tail fade-out to guarantee 0 DC and 0 clicks
-        const tailFade = t > (duration - 0.008) ? (duration - t) / 0.008 : 1.0;
-
-        let sample = (transient + shockwave + bodySignal * mainEnv) * tailFade;
-        sample = Math.tanh(sample * 1.35) * 0.82;
-
-        channel[i] = sample;
-      }
-
-      snapBuffers.push(audioBuf);
+    if (!arrayBuffer && window.CUSTOM_SFX_DATA?.[key]) {
+      const binary = atob(window.CUSTOM_SFX_DATA[key]);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      arrayBuffer = bytes.buffer;
     }
+
+    if (arrayBuffer) {
+      try {
+        const audioBuf = await ac.decodeAudioData(arrayBuffer);
+        sfxBuffers.set(key, audioBuf);
+        return audioBuf;
+      } catch(e) {
+        console.warn('Could not decode SFX:', key, e);
+      }
+    }
+    return null;
+  }
+
+  async function initCustomSfxPack(ac){
+    const promises = Object.entries(SFX_MANIFEST).map(([key, path]) => loadSfxAsset(key, path, ac));
+    await Promise.all(promises);
+    snapBuffers = [
+      sfxBuffers.get('string_snap_01'),
+      sfxBuffers.get('string_snap_02'),
+      sfxBuffers.get('string_snap_03'),
+      sfxBuffers.get('string_snap_04')
+    ].filter(Boolean);
   }
 
   function ensureAudio(){
@@ -583,8 +594,6 @@
     if(!AC)return;
     if(!audioContext){
       audioContext=new AC();
-      initSnapBuffers(audioContext);
-      audioReady=Promise.resolve();
       audioDestination=audioContext.createMediaStreamDestination();
       ripBus=audioContext.createGain();ripBus.gain.value=config().sfxVolume;
 
@@ -602,6 +611,7 @@
 
       const silence=audioContext.createConstantSource();silence.offset.value=0;silence.connect(audioDestination);silence.start();
       if(musicAudio)configureMusicSource();
+      audioReady = initCustomSfxPack(audioContext);
     }
     if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});
   }
@@ -610,40 +620,48 @@
     ripBus.gain.value=config().sfxVolume;
   }
   function stopRip(){
-    nextAvailableSnapTime=0;
+    lastSnapPlayTime=-10;
     while(activeSnapVoices.length){
       const v=activeSnapVoices.pop();
       try{v.source.stop();v.source.disconnect();v.gain.disconnect();}catch(e){}
     }
   }
+
+  function playSfx(key, options = {}) {
+    const cfg = config();
+    if (!cfg.ripSounds && !options.force) return;
+    if (!audioContext || audioContext.state !== 'running') return;
+    const buffer = sfxBuffers.get(key);
+    if (!buffer) return;
+
+    const now = audioContext.currentTime;
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+
+    const gain = audioContext.createGain();
+    const volume = options.volume !== undefined ? options.volume : 1.0;
+    gain.gain.setValueAtTime(volume, now);
+
+    if (options.playbackRate) {
+      source.playbackRate.setValueAtTime(options.playbackRate, now);
+    }
+
+    source.connect(gain);
+    gain.connect(ripBus);
+
+    source.onended = () => {
+      try { source.disconnect(); gain.disconnect(); } catch (e) {}
+    };
+
+    source.start(now);
+    return source;
+  }
+
   function playSnap(options={},force=false){
     const cfg=config();if(!force&&(!cfg.threads||!cfg.ripSounds))return;
     if(!audioContext||audioContext.state!=='running'||!snapBuffers.length)return;
 
     const now=audioContext.currentTime;
-    if(nextAvailableSnapTime<now){
-      nextAvailableSnapTime=now;
-    }
-
-    let scheduleTime=nextAvailableSnapTime;
-
-    // In a massive cluster cut, cap queue horizon so sounds NEVER lag behind the physics
-    if(!force&&(scheduleTime-now>MAX_BURST_QUEUE_LATENCY)){
-      if(activeSnapVoices.length>0){
-        const lastVoice=activeSnapVoices[activeSnapVoices.length-1];
-        if(lastVoice&&!lastVoice.ended){
-          try{
-            const curVal=lastVoice.gain.gain.value;
-            lastVoice.gain.gain.setValueAtTime(curVal,now);
-            lastVoice.gain.gain.linearRampToValueAtTime(Math.min(1.2,curVal*1.06),now+0.004);
-          }catch(e){}
-        }
-      }
-      return;
-    }
-
-    // Schedule next available slot with micro-spacing
-    nextAvailableSnapTime=scheduleTime+SNAP_MICRO_SPACING;
 
     // Prune finished voices
     for(let i=activeSnapVoices.length-1;i>=0;i--){
@@ -652,56 +670,47 @@
       }
     }
 
-    // Voice stealing: ensure simultaneous voices never exceed limit
-    while(activeSnapVoices.length>=MAX_CONCURRENT_SNAP_VOICES){
-      const oldest=activeSnapVoices.shift();
-      try{
-        oldest.gain.gain.setValueAtTime(oldest.gain.gain.value,scheduleTime);
-        oldest.gain.gain.linearRampToValueAtTime(0,scheduleTime+0.004);
-        oldest.source.stop(scheduleTime+0.005);
-      }catch(e){}
+    // Voice & timing limiting:
+    // At most 2 overlapping snap voices, and about 55ms minimum separation.
+    // Discard excess audio without queueing a backlog; never delay visual cuts.
+    if(!force){
+      if(activeSnapVoices.length>=2||(now-lastSnapPlayTime)<0.055){
+        return;
+      }
     }
 
-    // Variation selection: deterministic variation based on strand ID + counter
-    const varSeed=(options.k!==undefined?options.k+(options.ownerId||0)*11:snapVariationCounter++);
-    const bufIndex=Math.abs(varSeed)%snapBuffers.length;
+    lastSnapPlayTime=now;
+
+    // Choose randomly among four provided string snap WAV variations
+    const bufIndex=Math.floor(Math.random()*snapBuffers.length);
     const buffer=snapBuffers[bufIndex];
 
     const source=audioContext.createBufferSource();
     source.buffer=buffer;
 
-    // Natural physical variations:
-    // 1. Cut position along strand (near ball = slightly higher tension/pitch, near rim = slightly deeper twang)
+    // Subtle natural variations based on cut position and cutting velocity
     const cutPos=options.cutR!==undefined?options.cutR:0.5;
-    const posPitchShift=1.0+(0.5-cutPos)*0.06;
-
-    // 2. Ball cutting velocity (faster slice = subtly sharper transient & pitch)
+    const posPitchShift=1.0+(0.5-cutPos)*0.04;
     const cutSpeed=options.speed!==undefined?options.speed:300;
     const speedRatio=clamp(cutSpeed/300,0.75,1.4);
-    const speedPitchShift=1.0+(speedRatio-1.0)*0.04;
+    const speedPitchShift=1.0+(speedRatio-1.0)*0.03;
+    const microDetune=0.98+Math.random()*0.04;
 
-    // 3. Subtle random detune (±2.5%)
-    const microDetune=0.975+Math.random()*0.05;
-
-    source.playbackRate.setValueAtTime(posPitchShift*speedPitchShift*microDetune,scheduleTime);
-
-    // Dynamic voice gain management
-    const polyphonyDamping=1.0/Math.sqrt(Math.max(1,activeSnapVoices.length+1));
-    const speedVolume=0.90+(speedRatio-1.0)*0.15;
-    const voiceVolume=clamp(speedVolume*polyphonyDamping,0.55,1.1);
+    source.playbackRate.setValueAtTime(posPitchShift*speedPitchShift*microDetune,now);
 
     const voiceGain=audioContext.createGain();
-    voiceGain.gain.setValueAtTime(voiceVolume,scheduleTime);
-    voiceGain.gain.exponentialRampToValueAtTime(0.0001,scheduleTime+0.095);
+    const snapVolume=0.92;
+    voiceGain.gain.setValueAtTime(snapVolume,now);
 
     source.connect(voiceGain);
     voiceGain.connect(ripBus);
 
+    const duration=buffer.duration||0.18;
     const voiceEntry={
       source,
       gain:voiceGain,
-      startTime:scheduleTime,
-      endTime:scheduleTime+0.095,
+      startTime:now,
+      endTime:now+duration,
       ended:false
     };
     activeSnapVoices.push(voiceEntry);
@@ -716,16 +725,23 @@
       if(idx>=0)activeSnapVoices.splice(idx,1);
     };
 
-    source.start(scheduleTime);
+    source.start(now);
   }
   function playRip(force=false){
     playSnap({},force);
   }
+  function playUiSelect(){
+    playSfx('ui_select', { volume: 0.70 });
+  }
   window.audioEngine = {
     getBuffersCount: () => snapBuffers.length,
     getActiveVoicesCount: () => activeSnapVoices.length,
+    getSfxBuffersCount: () => sfxBuffers.size,
     playSnap,
-    getAudioContext: () => audioContext
+    playSfx,
+    playUiSelect,
+    getAudioContext: () => audioContext,
+    isAudioReady: () => audioReady
   };
   function configureMusicSource(){
     if(!audioContext||!musicAudio||musicSource)return;
@@ -759,6 +775,10 @@
   function snapThread(strand,x,y,position,cuttingBall){
     const owner=balls[strand.owner];
     if(finished||strand.cutAt>=0||!owner?.alive)return false;
+    const strandId=strand.uid||`${strand.owner}_${strand.k}_${strand.generation}`;
+    if(snappedStrandUids.has(strandId))return false;
+    snappedStrandUids.add(strandId);
+
     strand.cutAt=elapsed;strand.cutR=position;cutCount++;
     addParticles(x,y,owner.color,2,70);
     owner.hp=Math.max(0,owner.hp-1);owner.glow=1;
@@ -853,16 +873,22 @@
     if(!ball||!ball.alive||alive().length<=1)return;
     ball.alive=false;ball.hp=0;ball.deathAt=elapsed;
     lastEliminationTime=elapsed;
+    playSfx('participant_eliminated', { volume: 0.90 });
     announcements.unshift({name:cleanLabel(ball.name),color:ball.color,time:elapsed});
     if(announcements.length>4)announcements.length=4;
     addParticles(ball.x,ball.y,ball.color,36,300);
     rings.push({x:ball.x,y:ball.y,t:0,color:ball.color});
     const remaining=alive();
+    if(remaining.length===2 && !finalDuelSoundPlayed){
+      finalDuelSoundPlayed = true;
+      playSfx('final_duel', { volume: 0.92 });
+    }
     if(remaining.length===1)declareWinner(remaining[0]);else updateStats();
   }
   function declareWinner(ball,reason=''){
     if(winner)return;
     winner=ball;ball.winReason=reason;ball.hp=Math.max(ball.hp,1);finished=true;finishedAt=elapsed;
+    playSfx('winner_reveal', { volume: 0.95 });
     if(musicAudio&&recording===false)musicAudio.pause();
     setRunning(false);
     for(let i=0;i<4;i++)addParticles(ball.x,ball.y,ball.color,25,420);
@@ -883,10 +909,16 @@
 
     // Progressive speed system
     let phaseMultiplier=1.0;
-    if(count>=6)phaseMultiplier=SPEED_MULTIPLIERS.phase1;
-    else if(count>=4)phaseMultiplier=SPEED_MULTIPLIERS.phase2;
-    else if(count===3)phaseMultiplier=SPEED_MULTIPLIERS.phase3;
-    else if(count<=2)phaseMultiplier=SPEED_MULTIPLIERS.phase4;
+    let currentPhase=1;
+    if(count>=6){phaseMultiplier=SPEED_MULTIPLIERS.phase1;currentPhase=1;}
+    else if(count>=4){phaseMultiplier=SPEED_MULTIPLIERS.phase2;currentPhase=2;}
+    else if(count===3){phaseMultiplier=SPEED_MULTIPLIERS.phase3;currentPhase=3;}
+    else if(count<=2){phaseMultiplier=SPEED_MULTIPLIERS.phase4;currentPhase=4;}
+
+    if(currentPhase>lastSpeedPhase){
+      lastSpeedPhase=currentPhase;
+      playSfx('speed_boost',{volume:0.88});
+    }
 
     const timeSinceElim=elapsed-lastEliminationTime;
     let pacingBoost=0;
@@ -898,6 +930,10 @@
     let deadlineBoost=0;
     if(remainingTime<=6){
       deadlineBoost=clamp((6-remainingTime)/6,0,1)*0.6;
+      if(!deadlineSoundPlayed&&count>1){
+        deadlineSoundPlayed=true;
+        playSfx('speed_boost',{volume:0.88});
+      }
     }
 
     const currentTargetSpeed=125*(phaseMultiplier+pacingBoost+deadlineBoost)*cfg.speed;
@@ -929,7 +965,18 @@
       const a=active[i],b=active[j];if(!a.alive||!b.alive)continue;
       let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
       const min=a.r+b.r+2,key=(Math.min(a.id,b.id)<<8)|Math.max(a.id,b.id);
-      if(d>min+2){pairContacts.delete(key);continue;}
+      if(d>min+2){
+        // Near miss check: high-speed close shave without contact
+        if(d<min*1.45&&elapsed-lastNearMissSoundTime>1.8){
+          const relSpeed=Math.hypot(b.vx-a.vx,b.vy-a.vy);
+          if(relSpeed>240){
+            lastNearMissSoundTime=elapsed;
+            playSfx('near_miss_whoosh',{volume:0.65});
+          }
+        }
+        pairContacts.delete(key);
+        continue;
+      }
       if(d>=min)continue;
       if(d<.00001){dx=1;dy=0;d=1;}
       const nx=dx/d,ny=dy/d;
@@ -950,6 +997,11 @@
           }
           a.glow=.8;b.glow=.8;
           if(elapsed-lastCollisionTime>.055){addParticles((a.x+b.x)/2,(a.y+b.y)/2,'#e9faff',7,160);lastCollisionTime=elapsed;}
+          if(elapsed-lastBallCollisionSoundTime>=0.080){
+            lastBallCollisionSoundTime=elapsed;
+            const colWav=Math.random()<0.5?'ball_collision_01':'ball_collision_02';
+            playSfx(colWav,{volume:0.86,playbackRate:0.95+Math.random()*0.1});
+          }
         }
       }
       const overlap=(a.r+b.r+2-d)/2;
@@ -1337,12 +1389,13 @@
     if(finished)reset(true);
     else{setRunning(!simRunning);if(simRunning)startMusic();else{stopRip();if(musicAudio)musicAudio.pause();}}
   }
-  $('playBtn').addEventListener('click',togglePlayback);
-  $('resetBtn').addEventListener('click',()=>reset());
-  $('recordBtn').addEventListener('click',startRecording);
-  $('stopBtn').addEventListener('click',stopRecording);
-  $('count').addEventListener('change',()=>{if(recording)return;resizeSlots(Number($('count').value))});
+  $('playBtn').addEventListener('click',()=>{playUiSelect();togglePlayback();});
+  $('resetBtn').addEventListener('click',()=>{playUiSelect();reset();});
+  $('recordBtn').addEventListener('click',()=>{playUiSelect();startRecording();});
+  $('stopBtn').addEventListener('click',()=>{playUiSelect();stopRecording();});
+  $('count').addEventListener('change',()=>{playUiSelect();if(recording)return;resizeSlots(Number($('count').value))});
   $('shufflePlayers').addEventListener('click',()=>{
+    playUiSelect();
     if(recording)return;
     for(let i=slots.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[slots[i],slots[j]]=[slots[j],slots[i]]}
     slots.forEach((s, idx)=>{ cachedSlotsPool[idx]=s; });
@@ -1352,12 +1405,13 @@
   $('headline').addEventListener('input',()=>scheduleAutoSave());
   for(const id of ['headline','theme','duration','speed','guarantee','cta','threads','density','cutDamage','slowmo','quality']){
     $(id).addEventListener('change',()=>{
+      playUiSelect();
       if(!recording&&id!=='quality')reset();
       scheduleAutoSave();
     });
   }
-  $('saveProject').addEventListener('click',saveProject);
-  $('loadProject').addEventListener('click',()=>$('projectFile').click());
+  $('saveProject').addEventListener('click',()=>{playUiSelect();saveProject();});
+  $('loadProject').addEventListener('click',()=>{playUiSelect();$('projectFile').click();});
   $('projectFile').addEventListener('change',e=>{loadProject(e.target.files?.[0]);e.target.value=''});
   document.addEventListener('keydown',e=>{
     if(e.code==='Space'&&!['INPUT','SELECT','BUTTON'].includes(e.target.tagName)){
