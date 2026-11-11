@@ -1,0 +1,13 @@
+00.00s — battle_start
+00.65s — ui_select
+01.00s — arena_wall_hit_01
+01.42s — ball_collision_01
+01.86s — string_snap_01
+02.34s — string_snap_02
+02.81s — string_snap_03
+03.30s — string_snap_04
+04.04s — circle_growth
+04.61s — speed_boost
+05.35s — participant_eliminated
+06.32s — final_duel
+07.37s — winner_reveal

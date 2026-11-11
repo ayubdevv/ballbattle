@@ -1,0 +1,136 @@
+{
+  "sample_rate_hz": 48000,
+  "format": "48 kHz mono PCM 16-bit WAV",
+  "assets": {
+    "string_snap_01": {
+      "file": "sfx/string_snap_01.wav",
+      "duration_seconds": 0.188,
+      "peak_dbfs": -9.5
+    },
+    "string_snap_02": {
+      "file": "sfx/string_snap_02.wav",
+      "duration_seconds": 0.17,
+      "peak_dbfs": -9.5
+    },
+    "string_snap_03": {
+      "file": "sfx/string_snap_03.wav",
+      "duration_seconds": 0.188,
+      "peak_dbfs": -9.5
+    },
+    "string_snap_04": {
+      "file": "sfx/string_snap_04.wav",
+      "duration_seconds": 0.17,
+      "peak_dbfs": -9.5
+    },
+    "arena_wall_hit_01": {
+      "file": "sfx/arena_wall_hit_01.wav",
+      "duration_seconds": 0.155,
+      "peak_dbfs": -9.0
+    },
+    "arena_wall_hit_02": {
+      "file": "sfx/arena_wall_hit_02.wav",
+      "duration_seconds": 0.155,
+      "peak_dbfs": -9.0
+    },
+    "ball_collision_01": {
+      "file": "sfx/ball_collision_01.wav",
+      "duration_seconds": 0.178,
+      "peak_dbfs": -9
+    },
+    "ball_collision_02": {
+      "file": "sfx/ball_collision_02.wav",
+      "duration_seconds": 0.178,
+      "peak_dbfs": -9
+    },
+    "circle_growth": {
+      "file": "sfx/circle_growth.wav",
+      "duration_seconds": 0.27,
+      "peak_dbfs": -12
+    },
+    "speed_boost": {
+      "file": "sfx/speed_boost.wav",
+      "duration_seconds": 0.44,
+      "peak_dbfs": -10
+    },
+    "participant_eliminated": {
+      "file": "sfx/participant_eliminated.wav",
+      "duration_seconds": 0.53,
+      "peak_dbfs": -8
+    },
+    "final_duel": {
+      "file": "sfx/final_duel.wav",
+      "duration_seconds": 0.61,
+      "peak_dbfs": -9
+    },
+    "winner_reveal": {
+      "file": "sfx/winner_reveal.wav",
+      "duration_seconds": 1.28,
+      "peak_dbfs": -7
+    },
+    "battle_start": {
+      "file": "sfx/battle_start.wav",
+      "duration_seconds": 0.39,
+      "peak_dbfs": -9
+    },
+    "ui_select": {
+      "file": "sfx/ui_select.wav",
+      "duration_seconds": 0.094,
+      "peak_dbfs": -14
+    },
+    "near_miss_whoosh": {
+      "file": "sfx/near_miss_whoosh.wav",
+      "duration_seconds": 0.245,
+      "peak_dbfs": -13
+    }
+  },
+  "suggested_events": {
+    "string_broken": [
+      "string_snap_01",
+      "string_snap_02",
+      "string_snap_03",
+      "string_snap_04"
+    ],
+    "wall_hit": [
+      "arena_wall_hit_01",
+      "arena_wall_hit_02"
+    ],
+    "participant_collision": [
+      "ball_collision_01",
+      "ball_collision_02"
+    ],
+    "participant_growth": [
+      "circle_growth"
+    ],
+    "speed_ramp_started": [
+      "speed_boost"
+    ],
+    "participant_eliminated": [
+      "participant_eliminated"
+    ],
+    "two_participants_left": [
+      "final_duel"
+    ],
+    "winner_declared": [
+      "winner_reveal"
+    ],
+    "battle_started": [
+      "battle_start"
+    ],
+    "ui_selection": [
+      "ui_select"
+    ],
+    "near_miss_large_effect_only": [
+      "near_miss_whoosh"
+    ]
+  },
+  "recommended_audio_behavior": {
+    "string_snap_min_separation_ms": 55,
+    "string_snap_max_simultaneous_voices": 2,
+    "string_snap_event_age_drop_ms": 90,
+    "string_snap_note": "Deduplicate logical break events by unique string ID; discard excess truly simultaneous snaps rather than queueing a backlog. Keep graphics/physics independent of audio voice limit.",
+    "wall_hit_min_interval_per_participant_ms": 80,
+    "growth_note": "trigger once for actual wall collision / radius increase; do not trigger per animation frame",
+    "winner_note": "trigger only once per match",
+    "near_miss_note": "optional; do not trigger continuously"
+  }
+}
