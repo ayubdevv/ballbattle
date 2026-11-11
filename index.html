@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>BallBattlee Studio — Ball Battle Simulation v20</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <header class="brandline"><img src="assets/ballbattlee-logo.png" alt="BallBattlee logo"/><div><strong>BALLBATTLEE<span>STUDIO</span></strong><small>Battle video creator <span class="edition">FREE</span></small></div></header>
+      <div class="sidebar-scroll">
+        <section class="intro"><span class="eyebrow">CREATOR DASHBOARD</span><h1>Create the next <em>battle.</em></h1><p>Choose how many balls to use, upload your pictures, and record your battle.</p></section>
+        <section class="panel">
+          <div class="section-title"><span class="number">01</span><h2>Battle setup</h2></div>
+          <label>Headline <input id="headline" maxlength="35" value="WHO WILL WIN?" /></label>
+          <div class="two-col">
+            <label>Duration <select id="duration"><option value="20">20 seconds</option><option value="30" selected>30 seconds</option><option value="40">40 seconds</option><option value="50">50 seconds</option><option value="60">60 seconds</option></select></label>
+            <label>Speed <select id="speed"><option value="0.75">Smooth</option><option selected value="1">Classic</option><option value="1.4">Fast</option><option value="1.85">Chaos</option></select></label>
+          </div>
+          <label>Participants <select id="count"><option value="4">4 balls</option><option value="6">6 balls</option><option value="8" selected>8 balls</option><option value="10">10 balls</option><option value="12">12 balls</option></select></label>
+          <div class="form-note">Your custom names and pictures stay on this device.</div>
+        </section>
+        <section class="panel">
+          <div class="section-title"><span class="number">02</span><h2>Contenders</h2><button class="textbtn" id="shufflePlayers" title="Shuffle contender order">Shuffle ↻</button></div>
+          <div class="players-grid" id="playersList"></div>
+          <p class="form-note">Tap a circle to upload your own picture. Use pictures you have permission to use.</p>
+        </section>
+        <section class="panel">
+          <div class="section-title"><span class="number">03</span><h2>Look &amp; sound</h2></div>
+          <div class="two-col">
+            <label>Theme <select id="theme"><option value="neon">Neon Galaxy</option><option value="sunset">Sunset Rush</option><option value="arctic">Arctic Pulse</option></select></label>
+            <label>Quality <select id="quality"><option value="1080" selected>1080p Full HD</option><option value="720">720p HD</option></select></label>
+          </div>
+          <label class="toggleline"><input type="checkbox" id="threads" checked />Breakable player strings <span>✂</span></label>
+          <label class="toggleline"><input type="checkbox" id="ripSounds" checked />String rip "g'irt-g'irt" sounds <span>♫</span></label>
+          <p class="form-note">Rim hit: 11 fresh strings at the impact point, up to the starting HP. Last 3: +8% collision speed. Final 2: chase each other, +12% size/speed per collision, one sound for each strand physically touched and cut.</p>
+          <label>Fan-string density <select id="density"><option value="35">35 per player · Light</option><option value="110" selected>110 per player · Full</option><option value="55">55 per player · Classic</option><option value="75">75 per player · Dense</option></select></label>
+          <div class="two-col" style="display:none">
+            <label>Damage per cut <select id="cutDamage"><option value="1">Light · 1 HP</option><option value="2">Normal · 2 HP</option><option selected value="3">Strong · 3 HP</option></select></label>
+            <label>Finale slow-mo <select id="slowmo"><option value="on">When 2 remain</option><option value="off" selected>Off</option><option value="all">Whole battle</option></select></label>
+          </div>
+          <label class="range-title" for="sfxVolume">SFX volume <strong id="sfxVolumeReadout">75%</strong></label>
+          <input class="volume-range" id="sfxVolume" type="range" min="0" max="100" value="75" />
+          <button class="btn sub test-sound" id="testRip" type="button">▶ Play your original sound</button>
+          <label class="music-label">Background music (optional, your own licensed file)
+            <input type="file" id="musicFile" accept="audio/*" />
+          </label>
+          <div class="music-loaded" id="musicStatus">No music selected · Your original M4A · Full sound</div>
+          <label class="range-title" for="musicVolume">Music volume <strong id="musicVolumeReadout">35%</strong></label>
+          <input class="volume-range" id="musicVolume" type="range" min="0" max="100" value="35" />
+
+          <label class="toggleline"><input type="checkbox" id="cta" checked />Show subscribe message <span>+</span></label>
+          <label class="toggleline"><input type="checkbox" id="guarantee" />Time-limit tiebreak (highest HP) <span>★</span></label>
+        </section>
+        <section class="panel compact">
+          <div class="section-title"><span class="number">04</span><h2>Project</h2></div>
+          <p><a href="reference.html" target="_blank" style="color:#80dcff">Asl video bilan solishtirish ↗</a></p><div class="project-actions"><button id="saveProject" class="btn sub">Save settings</button><button id="loadProject" class="btn sub">Load settings</button></div>
+          <input id="projectFile" type="file" accept="application/json,.json" hidden />
+        </section>
+      </div>
+      <footer class="sidefooter">OFFLINE FIRST <span>•</span> NO SUBSCRIPTION <span>•</span> REFERENCE EDITION</footer>
+    </aside>
+    <main class="workspace">
+      <div class="topbar"><div class="breadcrumbs">PROJECTS <span>/</span> <strong>New Ball Battle</strong></div><div class="topbar-right"><span class="status-dot"></span>LOCAL STUDIO <div class="avatar">B</div></div></div>
+      <div class="workspace-content">
+        <div class="heading"><div><p class="eyebrow">LIVE CANVAS · 9:16 FORMAT</p><h2>Battle preview <span class="spark">✦</span></h2><p>Customize your arena and make a fresh Shorts video.</p></div><div class="chip"><span class="chip-circle"></span> YouTube Shorts Ready</div></div>
+        <div class="studio-grid">
+          <div class="preview-card"><div class="preview-top"><span><span class="preview-pulse"></span> LIVE PREVIEW</span><span id="previewResolution">720 × 1280</span></div><div class="canvas-area"><div class="phone-frame"><canvas id="battleCanvas" width="720" height="1280" aria-label="Animated ball battle preview"></canvas><div class="recording-overlay" id="recordingOverlay" hidden><span></span> REC</div></div></div><div class="preview-footer"><span><b id="timerLabel">0:00</b> / <span id="durationLabel">0:30</span></span><div class="timeline"><div id="timelineProgress"></div></div><span id="aliveLabel">8 alive</span></div></div>
+          <div class="action-column"><div class="action-card"><p class="eyebrow">THE CONTROL ROOM</p><h3>Ready to battle?</h3><p>Preview first, then export a video of your own simulation.</p><button id="playBtn" class="btn primary"><span id="playIcon">▶</span><span id="playText">Start simulation</span></button><button id="resetBtn" class="btn outlined">↻ Reset battle</button><div class="line"></div><p class="eyebrow">EXPORT VIDEO</p><button id="recordBtn" class="btn record">⦿ Record &amp; export</button><button id="stopBtn" class="btn danger" hidden>■ Stop recording</button><p class="tip"><b>WebM + audio</b> • 60 FPS target • 9:16 • 1080p / 720p. Recording is real-time; keep this tab visible. Convert in CapCut for MP4.</p><div class="info-box"><span>✦</span><div><b>Creator tip</b><p>Use Chrome or Edge on your laptop for the most reliable export. Convert to MP4 with an editor if needed.</p></div></div></div><div class="stats-card"><p class="eyebrow">SESSION OVERVIEW</p><div class="statrow"><span>Remaining balls</span><strong id="remainingValue">8 / 8</strong></div><div class="statrow"><span>Eliminations</span><strong id="eliminatedValue">0</strong></div><div class="statrow"><span>Strings intact</span><strong id="stringsValue">440 / 440</strong></div><div class="statrow"><span>Strings snapped</span><strong id="cutCountValue">0</strong></div><div class="statrow"><span>Strings renewed</span><strong id="stringsGainedValue">0</strong></div><div class="statrow"><span>Result</span><strong id="winnerValue">Pending</strong></div></div></div>
+        </div>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </div>
+    </main>
+  </div>
+  <script src="reference-assets.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

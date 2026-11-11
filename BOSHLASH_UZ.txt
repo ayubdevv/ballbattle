@@ -1,0 +1,58 @@
+BALLBATTLEE STUDIO v17 — CUSTOM BALLS
+
+ISHLATISH
+1. ZIP arxivni to'liq oching.
+2. index.html faylini Chrome yoki Edge bilan oching.
+3. Participants orqali to'plar sonini tanlang.
+4. Contenders bo'limida har bir doirani bosib o'z rasmingizni yuklang.
+   Yonidagi maydonda nomini o'zgartirishingiz mumkin.
+5. Start simulation orqali ko'ring; Record & export orqali ovozli WebM oling.
+
+BU VERSIYADAGI O'ZGARISHLAR
+- Preset va tayyor mamlakat/futbolchi ro'yxatlari olib tashlandi.
+- Dastlab to'plar raqamlangan; har biriga istalgan rasm yuklash mumkin.
+- To'plar soni ko'paytirilganda mavjud nom va rasmlar saqlanadi.
+- Qo'shimcha sintezlangan urilish va chiqib ketish ovozlari olib tashlandi.
+- Ip tovushi: 20261108_202718.m4a fayli to'liq ishlatiladi (0.76 soniya).
+  Fayl baytlari o'zgartirilmagan: kesish, filtr, qayta yaratish yoki tezlatish yo'q.
+- Test tugmasi yuborilgan ovozni bir marta to'liq eshittiradi.
+- Har bir haqiqatan uzilgan ip uchun M4A ovozi alohida boshlanadi.
+  Bir paytda bir nechta ip uzilsa, hech biri ovozsiz tashlab ketilmaydi; aralashma balandligi boshqariladi.
+- Oddiy to'p-to'p yoki to'p-halqa urilishi o'zi ovoz chiqarmaydi.
+  Faqat raqib to'pi bevosita tegib uzgan ip ovoz beradi.
+- Ovozning o'zidagi0.76soniyali davom uzilishdan keyin ham qisqa eshitiladi.
+- Kattalashish FAQAT 2 ta tirik to'p qolganda ishlaydi. 3 va undan ko'p
+  to'p bor paytda barchasining boshlang'ich o'lchami saqlanadi.
+- Oxirgi 2 ta to'pdan biri halqa chetiga qayta urilganda radiusi 10% kattalashadi.
+  Masalan: 40 → 44 → 48.4 → 53.2 piksel. Halqaga sig'ish chegarasi saqlanadi.
+- Halqa chetiga har alohida urilishda 11 ta ip urilgan joyda yangilanadi.
+  HP boshlang'ich chegaragacha to'ldiriladi (odatda110), undan oshmaydi.
+  Yangi iplar aynan urilgan nuqta atrofidagi kichik yoydan to'pga ulanadi.
+  To'p siljiganda ularning tashqi uchlari o'sha joyda qoladi.
+  Kesilgan ip yozuvi qayta ishlatilsa ham, uning uchi YANGI urilish joyiga ko'chiriladi.
+- Oxirgi 2 ta to'p bir-biriga burilib boradi va urilgach qisqa ajralib, yana yaqinlashadi.
+- Oxirgi 2 ta to'p har alohida to'qnashuvda 12% kattalashadi va 12% tezlashadi.
+- Finaldagi zarba halqasi faqat ko'rinish effekti; o'zi ip uzmaydi va ovoz chiqarmaydi.
+  Ip faqat to'pning haqiqiy tanasi yoki uning harakat yo'li ipni kesganda uziladi.
+- 3 ta tirik to'p qolganda to'qnashuv ikkalasini ham 8% tezlashtiradi.
+  4 va undan ko'p to'p bor paytda qo'shimcha tezlik bonusi ishlamaydi.
+  Tegishib turish bitta urilish hisoblanadi, ajralib qayta urilganda yana oshadi.
+- O'sish halqada boshqa tirik to'plarga ham joy qoladigan chegaragacha davom etadi.
+  Tezlik tanlangan rejim uchun belgilangan yuqori chegaragacha oshadi.
+- Strings renewed qatori o'yin davomida qo'shilgan/tiklangan iplar sonini ko'rsatadi.
+- Ixtiyoriy musiqa faylini yuklamaguningizcha faqat ip tovushlari ishlaydi.
+- Nom/rasmlar va sozlamalarni Save settings bilan JSON shaklida saqlang.
+  Avvalgi versiyadagi JSON loyihalar ham ochiladi.
+
+ESLATMA
+To'plar sonini kamaytirish ro'yxat oxiridagi ortiqcha to'plarni olib tashlaydi.
+Yozuv real vaqtda olinadi; yozayotganda brauzer sahifasini ochiq saqlang.
+reference.html taqqoslash uchun foydalanuvchi yuborgan original videoni ochadi.
+
+V15: ip/HP soni boshlang'ich zichlikdan oshmaydi (odatda110). Chekkadagi11ta yangi
+ip avval uzilganlarini to'ldiradi, qolganlari eng eski iplarni yangi joyga ko'chiradi.
+Video kuzatuvlari: VIDEO_LOGIKA_UZ.md.
+
+V17: Oxirgi6soniyada tezlik oshadi; oxirgi2to'p kattalashib jangni davom ettiradi.
+Belgilangan vaqt jang uchun nishon: g'olib chiqmaguncha TIME UP bilan to'xtamaydi.
+Har bir haqiqiy ip uzilishi alohida original ovozni boshlaydi.
