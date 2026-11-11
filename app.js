@@ -6,16 +6,32 @@
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: false });
   const TAU = Math.PI * 2, VW = 720, VH = 1280;
   const CENTER = { x: 360, y: 596, r: 330 };
-  const WALL_GROWTH_FACTOR = 1.10;
   const WALL_STRING_BONUS = 11;
   const IMPACT_THREAD_SPREAD = .22;
   const FINAL_ACCELERATION_COUNT = 3;
   const COLLISION_GROWTH_FACTOR = 1.05;
   const COLLISION_SPEED_FACTOR = 1.08;
-  const MAX_SPEED = 600;
   const DUEL_GROWTH_FACTOR = 1.12;
   const DUEL_SPEED_FACTOR = 1.12;
   const DUEL_SEPARATION_TIME = .18;
+
+  // Centralized Gameplay, Physics & Audio Parameters
+  const INITIAL_CIRCLE_RADIUS = 48;
+  const WALL_HIT_GROWTH_RATE = 0.018;
+  const MAX_CIRCLE_GROWTH = 1.30;
+  const GROWTH_ANIMATION_DURATION = 0.15;
+  const MAX_PARTICIPANT_SPEED = 700;
+  const SPEED_MULTIPLIERS = {
+    phase1: 1.0,
+    phase2: 1.3,
+    phase3: 1.7,
+    phase4: 2.15
+  };
+  const INACTIVITY_THRESHOLD = 7.0;
+  const INACTIVITY_ACCELERATION = 0.05;
+  const STRING_SOUND_MIN_INTERVAL = 0.055;
+  const MAX_CONCURRENT_BREAK_SOUNDS = 2;
+
   const pairContacts = new Set();
   const colors = ['#f8c242','#e66c5b','#9a72ec','#42bafa','#25bd93','#f0f4fc','#ff9468','#27d1d0','#ff5ca8','#a9ca45','#ba92f5','#ffb950'];
   const stars = Array.from({length:130}, (_,i)=>({x:fract(Math.sin(i * 127.1) * 58372.1)*VW, y:fract(Math.sin(i * 62.7) * 32292.9)*VH, a: .10 + fract(Math.sin(i * 91.3) * 131.7)*.22,r: i%6===0?1.25:.55}));
@@ -30,8 +46,8 @@
   let recorder=null, chunks=[], recording=false, finishedAt=-1;
   let audioContext=null, audioDestination=null, toastTimeout;
   let snapBuffers=[],ripBus=null,ripOutput=null,audioReady=Promise.resolve();
-  const activeRipSources=new Set();
-  let lastCollisionTime=0, duelClock=0, mark=0;
+  const activeRipSources=new Set(), activeRipNodes=[];
+  let lastCollisionTime=0, lastEliminationTime=0, lastStringSoundTime=-10, duelClock=0, mark=0;
   let colorTheme = 'neon';
   const config = () => ({
     title:$('headline').value.trim() || 'WHO WILL WIN?',
@@ -118,16 +134,22 @@
     }finally{URL.revokeObjectURL(url)}
   }
   function makeBall(slot,i,total){
-    const angle=-1.84+(i+.5)*TAU/total, radius=CENTER.r-52;
+    const angle=-1.84+(i+.5)*TAU/total, radius=CENTER.r-INITIAL_CIRCLE_RADIUS-16;
     const x=slot.x??CENTER.x+Math.cos(angle)*radius,y=slot.y??CENTER.y+Math.sin(angle)*radius;
     const direction=Math.atan2(CENTER.y-y,CENTER.x-x)+rand(-.32,.32),speed=125*config().speed;
     return {
       name:slot.name,color:slot.color,src:slot.src,
       x,y,prevX:x,prevY:y,renderPrevX:x,renderPrevY:y,
       vx:Math.cos(direction)*speed,vy:Math.sin(direction)*speed,
-      hp:config().density,alive:true,r:40,wallContact:false,duelSteerAfter:0,
+      hp:config().density,alive:true,
+      r:INITIAL_CIRCLE_RADIUS,
+      baseRadius:INITIAL_CIRCLE_RADIUS,
+      targetR:INITIAL_CIRCLE_RADIUS,
+      maxRadius:INITIAL_CIRCLE_RADIUS*MAX_CIRCLE_GROWTH,
+      wallContact:false,duelSteerAfter:0,
       speedFloor:speed,nextThreadIndex:config().density,glow:0,trail:[],
       id:i,rotation:0,deathAt:null,lastCut:-10,
+      wallHits:0,
       faceCanvas:null,faceRadius:0,faceName:'',faceSrc:null
     };
   }
@@ -174,16 +196,25 @@
     stringsGained+=born;
     return born;
   }
+  function growBallWall(ball){
+    if(!ball.alive)return;
+    ball.wallHits++;
+    if(alive().length===2){
+      const duelMax=Math.min(110,CENTER.r*Math.sqrt(.45/2));
+      ball.targetR=Math.min(ball.targetR*(1+WALL_HIT_GROWTH_RATE*1.5),duelMax);
+    }else{
+      ball.targetR=Math.min(ball.targetR*(1+WALL_HIT_GROWTH_RATE),ball.maxRadius);
+    }
+  }
   function growBall(ball,factor){
-    // Both rim and ball collision growth unlock only for the final two contestants.
+    // Rim and ball collision growth in final two
     if(alive().length!==2)return;
-    // Leave room for the other live balls; reaching the limit never shrinks a ball.
-    const maxRadius=Math.min(120,CENTER.r*Math.sqrt(.45/Math.max(1,alive().length)));
-    ball.r=Math.max(ball.r,Math.min(ball.r*factor,maxRadius));
+    const maxRadius=Math.min(110,CENTER.r*Math.sqrt(.45/2));
+    ball.targetR=Math.max(ball.targetR,Math.min(ball.targetR*factor,maxRadius));
   }
   function boostBall(ball,beforeSpeed,cfg,factor=COLLISION_SPEED_FACTOR){
     const current=Math.hypot(ball.vx,ball.vy);
-    ball.speedFloor=Math.min(MAX_SPEED*cfg.speed,Math.max(ball.speedFloor,beforeSpeed,current)*factor);
+    ball.speedFloor=Math.min(MAX_PARTICIPANT_SPEED*cfg.speed,Math.max(ball.speedFloor,beforeSpeed,current)*factor);
     if(current>1e-8){ball.vx*=ball.speedFloor/current;ball.vy*=ball.speedFloor/current;}
     else{ball.vx=ball.speedFloor;ball.vy=0;}
   }
@@ -258,12 +289,12 @@
   function resolveWall(ball){
     const dx=ball.x-CENTER.x,dy=ball.y-CENTER.y,dist=Math.hypot(dx,dy)||1;
     let boundary=CENTER.r-ball.r-3;
-    if(dist<boundary-3)ball.wallContact=false;
+    if(dist<boundary-4)ball.wallContact=false;
     if(dist<=boundary)return;
     const nx=dx/dist,ny=dy/dist,vdot=ball.vx*nx+ball.vy*ny;
     if(vdot>0){
       if(!ball.wallContact){
-        growBall(ball,WALL_GROWTH_FACTOR);addThreads(ball,WALL_STRING_BONUS,Math.atan2(ny,nx));
+        growBallWall(ball);addThreads(ball,WALL_STRING_BONUS,Math.atan2(ny,nx));
         ball.wallContact=true;
       }
       ball.vx-=1.88*vdot*nx;ball.vy-=1.88*vdot*ny;
@@ -285,7 +316,7 @@
   function reset(autoStart=false){
     if(recording&&!autoStart)return toast('Stop recording before resetting.');
     stopRip();
-    seed=50483;elapsed=0;finished=false;winner=null;finishedAt=-1;lastCollisionTime=0;duelClock=0;pairContacts.clear();stringsGained=0;mark=0;particles=[];rings=[];announcements=[];cutCount=0;
+    seed=50483;elapsed=0;finished=false;winner=null;finishedAt=-1;lastCollisionTime=0;lastEliminationTime=0;lastStringSoundTime=-10;duelClock=0;pairContacts.clear();stringsGained=0;mark=0;particles=[];rings=[];announcements=[];cutCount=0;
     accumulator=0;
     if(musicAudio){musicAudio.pause();musicAudio.currentTime=0;if(autoStart)startMusic();}
     balls=slots.map((slot,i)=>makeBall(slot,i,slots.length));createThreads();
@@ -316,32 +347,68 @@
       })).then(buffers=>snapBuffers=buffers).catch(()=>toast('Audio samples could not load.'));
       audioDestination=audioContext.createMediaStreamDestination();
       ripBus=audioContext.createGain();ripBus.gain.value=config().sfxVolume;
-      // Linear mixing: no saturation or aggressive compression of stacked copies.
-      ripOutput=ripBus;
-      ripBus.connect(audioContext.destination);ripBus.connect(audioDestination);
+
+      const limiter=audioContext.createDynamicsCompressor();
+      limiter.threshold.setValueAtTime(-4,audioContext.currentTime);
+      limiter.knee.setValueAtTime(6,audioContext.currentTime);
+      limiter.ratio.setValueAtTime(12,audioContext.currentTime);
+      limiter.attack.setValueAtTime(0.002,audioContext.currentTime);
+      limiter.release.setValueAtTime(0.05,audioContext.currentTime);
+
+      ripBus.connect(limiter);
+      limiter.connect(audioContext.destination);
+      limiter.connect(audioDestination);
+      ripOutput=limiter;
+
       const silence=audioContext.createConstantSource();silence.offset.value=0;silence.connect(audioDestination);silence.start();
       if(musicAudio)configureMusicSource();
     }
     if(audioContext.state==='suspended')audioContext.resume().catch(()=>{});
   }
-  // Every successful physical fiber cut gets its own complete original sample.
-  // Normalize the shared mix instead of suppressing simultaneous cut events.
   function updateRipMix(){
-    if(!ripBus||!audioContext)return;
-    ripBus.gain.setTargetAtTime(config().sfxVolume/Math.max(1,activeRipSources.size),audioContext.currentTime,.004);
+    if(!ripBus)return;
+    ripBus.gain.value=config().sfxVolume;
   }
   function stopRip(){
-    for(const source of activeRipSources)source.stop();
-    activeRipSources.clear();updateRipMix();
+    while(activeRipNodes.length){
+      const v=activeRipNodes.pop();
+      try{v.source.stop();v.source.disconnect();v.gain.disconnect();}catch(e){}
+    }
   }
   function playRip(force=false){
     const cfg=config();if(!force&&(!cfg.threads||!cfg.ripSounds))return;
     if(!audioContext||audioContext.state!=='running'||!snapBuffers.length)return;
-    if(force)stopRip();
+    const now=audioContext.currentTime;
+    if(!force&&(now-lastStringSoundTime<STRING_SOUND_MIN_INTERVAL))return;
+    lastStringSoundTime=now;
+
+    for(let i=activeRipNodes.length-1;i>=0;i--){
+      if(activeRipNodes[i].ended)activeRipNodes.splice(i,1);
+    }
+    while(activeRipNodes.length>=MAX_CONCURRENT_BREAK_SOUNDS){
+      const oldest=activeRipNodes.shift();
+      try{
+        oldest.gain.gain.setValueAtTime(oldest.gain.gain.value,now);
+        oldest.gain.gain.linearRampToValueAtTime(0,now+0.006);
+        oldest.source.stop(now+0.006);
+      }catch(e){}
+    }
+
     const source=audioContext.createBufferSource();
     source.buffer=snapBuffers[0];source.playbackRate.value=1;source.loop=false;
-    activeRipSources.add(source);source.connect(ripBus);updateRipMix();
-    source.onended=()=>{source.disconnect();activeRipSources.delete(source);updateRipMix();};
+    const voiceGain=audioContext.createGain();
+    voiceGain.gain.value=1;
+    source.connect(voiceGain);
+    voiceGain.connect(ripBus);
+
+    const voiceEntry={source,gain:voiceGain,startTime:now,ended:false};
+    activeRipNodes.push(voiceEntry);
+    source.onended=()=>{
+      voiceEntry.ended=true;
+      try{source.disconnect();voiceGain.disconnect();}catch(e){}
+      const idx=activeRipNodes.indexOf(voiceEntry);
+      if(idx>=0)activeRipNodes.splice(idx,1);
+    };
     source.start();
   }
   function configureMusicSource(){
@@ -467,6 +534,7 @@
   function eliminate(ball){
     if(!ball||!ball.alive||alive().length<=1)return;
     ball.alive=false;ball.hp=0;ball.deathAt=elapsed;
+    lastEliminationTime=elapsed;
     announcements.unshift({name:cleanLabel(ball.name),color:ball.color,time:elapsed});
     if(announcements.length>4)announcements.length=4;
     addParticles(ball.x,ball.y,ball.color,36,300);
@@ -491,18 +559,31 @@
     const slow=cfg.slowmo==='all'||(cfg.slowmo==='on'&&alive().length<=2&&alive().length>1);
     const sdt=dt*(slow?.52:1);
     elapsed+=dt;
-    // Near the deadline, finish the physical battle instead of a time-up screen.
-    const remainingTime=cfg.duration-elapsed;
-    if(remainingTime<=6){
-      const pressure=clamp((6-remainingTime)/6,0,1);
-      const survivors=alive();
-      for(const ball of survivors){
-        ball.speedFloor=Math.max(ball.speedFloor,(260+pressure*340)*cfg.speed);
-        if(survivors.length===2)growBall(ball,1+dt*(.22+pressure*.3));
-      }
-    }
-    const rotationSpeed = .24;
+
     const active=alive();
+    const count=active.length;
+
+    // Progressive speed system
+    let phaseMultiplier=1.0;
+    if(count>=6)phaseMultiplier=SPEED_MULTIPLIERS.phase1;
+    else if(count>=4)phaseMultiplier=SPEED_MULTIPLIERS.phase2;
+    else if(count===3)phaseMultiplier=SPEED_MULTIPLIERS.phase3;
+    else if(count<=2)phaseMultiplier=SPEED_MULTIPLIERS.phase4;
+
+    const timeSinceElim=elapsed-lastEliminationTime;
+    let pacingBoost=0;
+    if(timeSinceElim>INACTIVITY_THRESHOLD&&count>1){
+      pacingBoost=Math.min(0.55,(timeSinceElim-INACTIVITY_THRESHOLD)*INACTIVITY_ACCELERATION);
+    }
+
+    const remainingTime=cfg.duration-elapsed;
+    let deadlineBoost=0;
+    if(remainingTime<=6){
+      deadlineBoost=clamp((6-remainingTime)/6,0,1)*0.6;
+    }
+
+    const currentTargetSpeed=125*(phaseMultiplier+pacingBoost+deadlineBoost)*cfg.speed;
+
     steerDuel(active,sdt);
     // Bouncing-ball physics: independent motion, wall reflections and pairwise impulses.
     for(const b of active){
@@ -510,7 +591,14 @@
       b.rotation+=sdt*1.9;
       b.glow=Math.max(0,b.glow-dt*3);
 
-      let speed=Math.hypot(b.vx,b.vy),min=b.speedFloor,max=Math.min(MAX_SPEED*cfg.speed,Math.max(170*cfg.speed,min*1.36));
+      // Smooth growth animation
+      if(b.r<b.targetR){
+        b.r=Math.min(b.targetR,b.r+(b.targetR-b.baseRadius)*(sdt/GROWTH_ANIMATION_DURATION));
+      }
+
+      // Smooth speed adjustment towards phase target
+      b.speedFloor+=(currentTargetSpeed-b.speedFloor)*Math.min(1,sdt*2.0);
+      let speed=Math.hypot(b.vx,b.vy),min=b.speedFloor,max=Math.min(MAX_PARTICIPANT_SPEED*cfg.speed,Math.max(180*cfg.speed,min*1.35));
       if(speed>1e-6){
         if(speed>max){const s=max/speed;b.vx*=s;b.vy*=s;}
         else if(speed<min){const s=min/speed;b.vx*=s;b.vy*=s;}
@@ -695,7 +783,8 @@
       gradient.addColorStop(0,'#d7e7fa');gradient.addColorStop(1,'#314a68');
       fc.fillStyle=gradient;fc.fillRect(0,0,d,d);
       const label=avatarText(b.name);
-      fc.font=`900 ${label.length>2?23:25}px Inter,Arial,sans-serif`;
+      const fontSize = Math.round(r * (label.length > 2 ? 0.54 : 0.60));
+      fc.font=`900 ${fontSize}px Inter,Arial,sans-serif`;
       fc.fillStyle='#071529';fc.textAlign='center';fc.textBaseline='middle';
       fc.fillText(label,r,r-1);
     }
@@ -713,11 +802,11 @@
     ctx.shadowBlur=0;ctx.fillStyle=b.color;ctx.beginPath();ctx.arc(rx,ry,r+4,0,TAU);ctx.fill();
     ctx.restore();
 
-    if(!b.faceCanvas||b.faceRadius!==r||b.faceName!==b.name||b.faceSrc!==b.src)updateBallFace(b);
+    if(!b.faceCanvas||Math.abs(b.faceRadius-r)>0.5||b.faceName!==b.name||b.faceSrc!==b.src)updateBallFace(b);
     ctx.drawImage(b.faceCanvas,rx-r,ry-r);
 
     ctx.beginPath();ctx.arc(rx,ry,r+4,0,TAU);ctx.strokeStyle=b.color;ctx.lineWidth=2;ctx.stroke();
-    ctx.shadowBlur=8;ctx.shadowColor='#000';text(rx,ry+r+24,String(Math.ceil(b.hp)),18,'#fff',900);ctx.shadowBlur=0;
+    ctx.shadowBlur=8;ctx.shadowColor='#000';text(rx,ry+r+22,String(Math.ceil(b.hp)),18,'#fff',900);ctx.shadowBlur=0;
   }
   function drawParticles(){
     if(particles.length){
