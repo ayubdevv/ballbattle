@@ -22,9 +22,11 @@
   function fract(n){return n-Math.floor(n)}
   let slots = [];
   let imageCache = new Map();
-  let balls = [], particles=[], rings=[], threads=[], announcements=[];
+  let balls = [], particles=[], rings=[], threads=[], announcements=[], ballThreads=[];
   let cutCount=0, stringsGained=0, musicAudio=null, musicSource=null, musicGain=null, musicObjectUrl=null;
   let elapsed = 0, simRunning=false, finished=false, winner=null, raf=0, lastStamp=0;
+  const FIXED_DT = 1 / 120;
+  let accumulator = 0, bgCanvas = null;
   let recorder=null, chunks=[], recording=false, finishedAt=-1;
   let audioContext=null, audioDestination=null, toastTimeout;
   let snapBuffers=[],ripBus=null,ripOutput=null,audioReady=Promise.resolve();
@@ -72,7 +74,10 @@
     if(!src)return null;
     if(!imageCache.has(src)){
       const img=new Image();
-      img.onload=()=>draw();
+      img.onload=()=>{
+        balls.forEach(b=>{ if(b.src===src) b.faceSrc=null; });
+        draw();
+      };
       img.onerror=()=>imageCache.delete(src);
       img.src=src;imageCache.set(src,img);
     }
@@ -116,17 +121,41 @@
     const angle=-1.84+(i+.5)*TAU/total, radius=CENTER.r-52;
     const x=slot.x??CENTER.x+Math.cos(angle)*radius,y=slot.y??CENTER.y+Math.sin(angle)*radius;
     const direction=Math.atan2(CENTER.y-y,CENTER.x-x)+rand(-.32,.32),speed=125*config().speed;
-    return {name:slot.name,color:slot.color,src:slot.src,x,y,prevX:x,prevY:y,vx:Math.cos(direction)*speed,vy:Math.sin(direction)*speed,hp:config().density,alive:true,r:40,wallContact:false,duelSteerAfter:0,speedFloor:speed,nextThreadIndex:config().density,glow:0,trail:[],id:i,rotation:0,deathAt:null,lastCut:-10};
+    return {
+      name:slot.name,color:slot.color,src:slot.src,
+      x,y,prevX:x,prevY:y,renderPrevX:x,renderPrevY:y,
+      vx:Math.cos(direction)*speed,vy:Math.sin(direction)*speed,
+      hp:config().density,alive:true,r:40,wallContact:false,duelSteerAfter:0,
+      speedFloor:speed,nextThreadIndex:config().density,glow:0,trail:[],
+      id:i,rotation:0,deathAt:null,lastCut:-10,
+      faceCanvas:null,faceRadius:0,faceName:'',faceSrc:null
+    };
   }
   function setRunning(run){simRunning=run;$('playText').textContent=run?'Pause simulation':finished?'Replay simulation':'Start simulation';$('playIcon').textContent=run?'Ⅱ':'▶';}
   // Each fiber joins its moving owner to a fixed point on the arena rim.
   function createThreads(){
     const density=config().density;
-    threads=slots.flatMap((slot,owner)=>Array.from({length:density},(_,k)=>({owner,k,density,angle:-1.84+owner*TAU/slots.length+k*TAU/slots.length/density,cutAt:-1,cutR:0})));
+    threads=[];
+    ballThreads=Array.from({length:slots.length},()=>[]);
+    for(let owner=0;owner<slots.length;owner++){
+      for(let k=0;k<density;k++){
+        const angle=-1.84+owner*TAU/slots.length+k*TAU/slots.length/density;
+        const cosAngle=Math.cos(angle);
+        const sinAngle=Math.sin(angle);
+        const strand={
+          owner,k,density,angle,cosAngle,sinAngle,
+          bx:CENTER.x+cosAngle*(CENTER.r-1),
+          by:CENTER.y+sinAngle*(CENTER.r-1),
+          cutAt:-1,cutR:0,generation:k
+        };
+        threads.push(strand);
+        ballThreads[owner].push(strand);
+      }
+    }
   }
   function addThreads(ball,count,impactAngle){
     if(!config().threads||!ball.alive)return 0;
-    const owned=threads.filter(s=>s.owner===ball.id);
+    const owned=ballThreads[ball.id]||[];
     const broken=owned.filter(s=>s.cutAt>=0);
     const live=owned.filter(s=>s.cutAt<0).sort((a,b)=>(a.generation??a.k)-(b.generation??b.k));
     let born=0;
@@ -136,6 +165,10 @@
       const strand=broken.shift()||live.shift();if(!strand)break;
       if(strand.cutAt>=0)ball.hp++;
       strand.angle=impactAngle+(count>1?i/(count-1)-.5:0)*IMPACT_THREAD_SPREAD;
+      strand.cosAngle=Math.cos(strand.angle);
+      strand.sinAngle=Math.sin(strand.angle);
+      strand.bx=CENTER.x+strand.cosAngle*(CENTER.r-1);
+      strand.by=CENTER.y+strand.sinAngle*(CENTER.r-1);
       strand.generation=ball.nextThreadIndex++;strand.cutAt=-1;strand.cutR=0;born++;
     }
     stringsGained+=born;
@@ -165,8 +198,10 @@
       return p;
     };
     let best=null;
-    for(const strand of threads){
-      if(strand.owner!==opponent.id||strand.cutAt>=0)continue;
+    const oppThreads=ballThreads[opponent.id]||[];
+    for(let i=0;i<oppThreads.length;i++){
+      const strand=oppThreads[i];
+      if(strand.cutAt>=0)continue;
       const g=strandGeometry(strand);if(!g)continue;
       for(const t of [.25,.55,.82]){
         const x=g.ax+g.dx*g.length*t,y=g.ay+g.dy*g.length*t;
@@ -181,7 +216,7 @@
       }
     }
     if(!best){
-      const strand=threads.find(s=>s.owner===opponent.id&&s.cutAt<0);
+      const strand=oppThreads.find(s=>s.cutAt<0);
       if(!strand)return opponent;
       const angle=Math.atan2(ball.y-opponent.y,ball.x-opponent.x)+(ball.id<opponent.id?.7:-.7);
       best={...constrain({x:opponent.x+Math.cos(angle)*(clearance+8),y:opponent.y+Math.sin(angle)*(clearance+8)}),strand,until:duelClock+.22};
@@ -192,7 +227,7 @@
   function steerDuel(active,dt){
     if(active.length!==2)return;
     duelClock+=dt;
-    const key=`${Math.min(active[0].id,active[1].id)}:${Math.max(active[0].id,active[1].id)}`;
+    const key=(Math.min(active[0].id,active[1].id)<<8)|Math.max(active[0].id,active[1].id);
     if(pairContacts.has(key))return;
     for(let i=0;i<2;i++){
       const ball=active[i],opponent=active[1-i];
@@ -223,7 +258,7 @@
   function resolveWall(ball){
     const dx=ball.x-CENTER.x,dy=ball.y-CENTER.y,dist=Math.hypot(dx,dy)||1;
     let boundary=CENTER.r-ball.r-3;
-    if(dist<boundary-2)ball.wallContact=false;
+    if(dist<boundary-3)ball.wallContact=false;
     if(dist<=boundary)return;
     const nx=dx/dist,ny=dy/dist,vdot=ball.vx*nx+ball.vy*ny;
     if(vdot>0){
@@ -240,18 +275,22 @@
   function strandGeometry(strand,usePrevious=false){
     const b=balls[strand.owner];if(!b)return null;
     const x=usePrevious?b.prevX:b.x,y=usePrevious?b.prevY:b.y;
-    const bx=CENTER.x+Math.cos(strand.angle)*(CENTER.r-1),by=CENTER.y+Math.sin(strand.angle)*(CENTER.r-1);
-    const length=Math.hypot(bx-x,by-y),dx=(bx-x)/length,dy=(by-y)/length;
+    const bx=strand.bx,by=strand.by;
+    const length=Math.hypot(bx-x,by-y);
     if(length<=b.r+1)return null;
+    const inv=1/length;
+    const dx=(bx-x)*inv,dy=(by-y)*inv;
     return {ax:x+dx*b.r,ay:y+dy*b.r,bx,by,dx,dy,length:length-b.r};
   }
   function reset(autoStart=false){
     if(recording&&!autoStart)return toast('Stop recording before resetting.');
     stopRip();
     seed=50483;elapsed=0;finished=false;winner=null;finishedAt=-1;lastCollisionTime=0;duelClock=0;pairContacts.clear();stringsGained=0;mark=0;particles=[];rings=[];announcements=[];cutCount=0;
+    accumulator=0;
     if(musicAudio){musicAudio.pause();musicAudio.currentTime=0;if(autoStart)startMusic();}
     balls=slots.map((slot,i)=>makeBall(slot,i,slots.length));createThreads();
-    setRunning(autoStart);updateStats();draw();
+    initBgCanvas();
+    setRunning(autoStart);updateStats();draw(1);
   }
   function updateStats(){
     const total=slots.length,num=alive().length;
@@ -349,24 +388,75 @@
   function cutEnemyThreads(active){
     if(!config().threads||!threads.length||active.length<2)return;
     const maxCutsPerBall=200;
-    for(const ball of active){
+    for(let bIdx=0;bIdx<active.length;bIdx++){
+      const ball=active[bIdx];
       if(!ball.alive)continue;
       let cuts=0;
-      for(const strand of threads){
-        if(strand.cutAt>=0||strand.owner===ball.id)continue;
-        const owner=balls[strand.owner];if(!owner?.alive)continue;
-        const g=strandGeometry(strand);
-        if(!g)continue;
-        const distance=segmentDistance(ball.prevX,ball.prevY,ball.x,ball.y,g.ax,g.ay,g.bx,g.by);
-        const past=strandGeometry(strand,true);
-        const prevDistance=past?segmentDistance(ball.prevX,ball.prevY,ball.x,ball.y,past.ax,past.ay,past.bx,past.by):Infinity;
-        if(Math.min(distance,prevDistance)>ball.r)continue;
-        // Estimate where along the fiber the opponent touches it.
-        const t=clamp(((ball.x-g.ax)*g.dx+(ball.y-g.ay)*g.dy)/g.length,.06,.94);
-        const px=g.ax+(g.bx-g.ax)*t,py=g.ay+(g.by-g.ay)*t;
-        if(snapThread(strand,px,py,t)){ball.glow=.7;ball.lastCut=elapsed;cuts++;}
-        if(finished)return;
-        if(cuts>=maxCutsPerBall)break;
+      const bMinX=Math.min(ball.prevX,ball.x)-ball.r;
+      const bMaxX=Math.max(ball.prevX,ball.x)+ball.r;
+      const bMinY=Math.min(ball.prevY,ball.y)-ball.r;
+      const bMaxY=Math.max(ball.prevY,ball.y)+ball.r;
+
+      for(let oIdx=0;oIdx<balls.length;oIdx++){
+        if(oIdx===ball.id)continue;
+        const owner=balls[oIdx];
+        if(!owner||!owner.alive)continue;
+
+        const sMinX=Math.min(owner.x-owner.r,owner.prevX-owner.r);
+        const sMaxX=Math.max(owner.x+owner.r,owner.prevX+owner.r);
+        const sMinY=Math.min(owner.y-owner.r,owner.prevY-owner.r);
+        const sMaxY=Math.max(owner.y+owner.r,owner.prevY+owner.r);
+
+        const oThreads=ballThreads[oIdx];
+        if(!oThreads)continue;
+        for(let sIdx=0;sIdx<oThreads.length;sIdx++){
+          const strand=oThreads[sIdx];
+          if(strand.cutAt>=0)continue;
+
+          // Bounding box prune
+          const strMinX=Math.min(strand.bx,sMinX);
+          const strMaxX=Math.max(strand.bx,sMaxX);
+          const strMinY=Math.min(strand.by,sMinY);
+          const strMaxY=Math.max(strand.by,sMaxY);
+
+          if(bMaxX<strMinX||bMinX>strMaxX||bMaxY<strMinY||bMinY>strMaxY)continue;
+
+          // Inlined strand geometry current
+          const obx=strand.bx,oby=strand.by;
+          const ox=owner.x,oy=owner.y,or_=owner.r;
+          const odx=obx-ox,ody=oby-oy;
+          const olen=Math.hypot(odx,ody);
+          if(olen<=or_+1)continue;
+          const invOlen=1/olen;
+          const oUnitX=odx*invOlen,oUnitY=ody*invOlen;
+          const oax=ox+oUnitX*or_,oay=oy+oUnitY*or_;
+
+          const distance=segmentDistance(ball.prevX,ball.prevY,ball.x,ball.y,oax,oay,obx,oby);
+
+          // Past strand geometry
+          const opx=owner.prevX,opy=owner.prevY;
+          const opdx=obx-opx,opdy=oby-opy;
+          const oplen=Math.hypot(opdx,opdy);
+          let prevDistance=Infinity;
+          if(oplen>or_+1){
+            const invOplen=1/oplen;
+            const opax=opx+opdx*invOplen*or_,opay=opy+opdy*invOplen*or_;
+            prevDistance=segmentDistance(ball.prevX,ball.prevY,ball.x,ball.y,opax,opay,obx,oby);
+          }
+
+          if(Math.min(distance,prevDistance)>ball.r)continue;
+
+          const gLen=olen-or_;
+          const t=clamp(((ball.x-oax)*oUnitX+(ball.y-oay)*oUnitY)/gLen,.06,.94);
+          const px=oax+(obx-oax)*t,py=oay+(oby-oay)*t;
+          if(snapThread(strand,px,py,t)){
+            ball.glow=.7;
+            ball.lastCut=elapsed;
+            cuts++;
+          }
+          if(finished)return;
+          if(cuts>=maxCutsPerBall)break;
+        }
       }
     }
   }
@@ -419,13 +509,12 @@
       b.prevX=b.x;b.prevY=b.y;
       b.rotation+=sdt*1.9;
       b.glow=Math.max(0,b.glow-dt*3);
-      
-      
-      
-      
+
       let speed=Math.hypot(b.vx,b.vy),min=b.speedFloor,max=Math.min(MAX_SPEED*cfg.speed,Math.max(170*cfg.speed,min*1.36));
-      if(speed>max){b.vx*=max/speed;b.vy*=max/speed;}
-      if(speed<min){const a=Math.atan2(b.vy,b.vx);b.vx=Math.cos(a)*min;b.vy=Math.sin(a)*min;}
+      if(speed>1e-6){
+        if(speed>max){const s=max/speed;b.vx*=s;b.vy*=s;}
+        else if(speed<min){const s=min/speed;b.vx*=s;b.vy*=s;}
+      }else{b.vx=min;b.vy=0;}
       b.x+=b.vx*sdt;b.y+=b.vy*sdt;
       resolveWall(b);
       b.trail.push({x:b.x,y:b.y});if(b.trail.length>8)b.trail.shift();
@@ -433,7 +522,7 @@
     for(let i=0;i<active.length;i++)for(let j=i+1;j<active.length;j++){
       const a=active[i],b=active[j];if(!a.alive||!b.alive)continue;
       let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
-      const min=a.r+b.r+2,key=`${a.id}:${b.id}`;
+      const min=a.r+b.r+2,key=(Math.min(a.id,b.id)<<8)|Math.max(a.id,b.id);
       if(d>min+2){pairContacts.delete(key);continue;}
       if(d>=min)continue;
       if(d<.00001){dx=1;dy=0;d=1;}
@@ -457,7 +546,6 @@
           if(elapsed-lastCollisionTime>.055){addParticles((a.x+b.x)/2,(a.y+b.y)/2,'#e9faff',7,160);lastCollisionTime=elapsed;}
         }
       }
-      // Separate using the enlarged radii, including already latched contacts.
       const overlap=(a.r+b.r+2-d)/2;
       if(overlap>0){a.x-=nx*overlap;a.y-=ny*overlap;b.x+=nx*overlap;b.y+=ny*overlap;}
       if(newImpact&&active.length===2){
@@ -467,8 +555,35 @@
         rings.push({x,y,t:0,color:'#fff4b0',maxRadius:pulse});
       }
     }
-    // A collision may push a growing ball into the rim in the same step.
-    for(const b of active)if(b.alive)resolveWall(b);
+    // Iterative position relaxation: completely prevent overlapping and arena escape
+    for(let iter=0;iter<3;iter++){
+      let anyOverlap=false;
+      for(let i=0;i<active.length;i++){
+        const ball=active[i];if(!ball.alive)continue;
+        const dx=ball.x-CENTER.x,dy=ball.y-CENTER.y,dist=Math.hypot(dx,dy)||1;
+        const boundary=CENTER.r-ball.r-3;
+        if(dist>boundary){ball.x=CENTER.x+(dx/dist)*boundary;ball.y=CENTER.y+(dy/dist)*boundary;}
+      }
+      for(let i=0;i<active.length;i++)for(let j=i+1;j<active.length;j++){
+        const a=active[i],b=active[j];if(!a.alive||!b.alive)continue;
+        let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+        const min=a.r+b.r+2;
+        if(d<min){
+          anyOverlap=true;
+          if(d<.00001){dx=1;dy=0;d=1;}
+          const nx=dx/d,ny=dy/d,overlap=(min-d)/2;
+          a.x-=nx*overlap;a.y-=ny*overlap;b.x+=nx*overlap;b.y+=ny*overlap;
+        }
+      }
+      if(!anyOverlap)break;
+    }
+    for(let i=0;i<active.length;i++){
+      const ball=active[i];if(!ball.alive)continue;
+      const dx=ball.x-CENTER.x,dy=ball.y-CENTER.y,dist=Math.hypot(dx,dy)||1;
+      const boundary=CENTER.r-ball.r-3;
+      if(dist>boundary){ball.x=CENTER.x+(dx/dist)*boundary;ball.y=CENTER.y+(dy/dist)*boundary;}
+    }
+
     // Strands belong to individual contestants and are cut by other balls.
     cutEnemyThreads(active);
     for(const b of active)if(b.alive&&b.hp<=0)eliminate(b);
@@ -499,50 +614,129 @@
     else ctx.fillText(label,x,y);
     ctx.restore();
   }
+  function initBgCanvas(){
+    if(!bgCanvas){
+      bgCanvas=document.createElement('canvas');
+      bgCanvas.width=VW;bgCanvas.height=VH;
+    }
+    const bctx=bgCanvas.getContext('2d');
+    bctx.fillStyle='#000207';bctx.fillRect(0,0,VW,VH);
+    const g=bctx.createRadialGradient(CENTER.x,CENTER.y,80,CENTER.x,CENTER.y,540);
+    g.addColorStop(0,'#0b1728');g.addColorStop(.65,'#030c15');g.addColorStop(1,'#000207');
+    bctx.fillStyle=g;bctx.fillRect(0,0,VW,VH);
+  }
   function drawBackground(t){
-    ctx.fillStyle='#000207';ctx.fillRect(0,0,VW,VH);
-    const g=ctx.createRadialGradient(360,596,80,360,596,540);g.addColorStop(0,'#0b1728');g.addColorStop(.65,'#030c15');g.addColorStop(1,'#000207');ctx.fillStyle=g;ctx.fillRect(0,0,VW,VH);
+    if(!bgCanvas)initBgCanvas();
+    ctx.drawImage(bgCanvas,0,0);
   }
   function drawArena(t){
     ctx.save();ctx.beginPath();ctx.arc(CENTER.x,CENTER.y,CENTER.r,0,TAU);ctx.strokeStyle='#f6fbff';ctx.lineWidth=3;ctx.shadowColor='#a5d7ed';ctx.shadowBlur=5;ctx.stroke();ctx.restore();
   }
-  function drawThreads(t){
+  function drawThreads(alpha=1){
     if(!config().threads)return;
-    ctx.save();ctx.beginPath();ctx.arc(CENTER.x,CENTER.y,CENTER.r,0,TAU);ctx.clip();
-    for(const strand of threads){
-      const b=balls[strand.owner];if(!b?.alive||strand.cutAt>=0)continue;
-      const g=strandGeometry(strand);if(!g)continue;
-      ctx.strokeStyle=b.color;ctx.globalAlpha=.68;ctx.lineWidth=.85;
-      ctx.beginPath();ctx.moveTo(g.ax,g.ay);ctx.lineTo(g.bx,g.by);ctx.stroke();
-      ctx.globalAlpha=.95;ctx.fillStyle=b.color;ctx.beginPath();ctx.arc(g.bx,g.by,1.65,0,TAU);ctx.fill();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(CENTER.x,CENTER.y,CENTER.r+3,0,TAU);
+    ctx.clip();
+    for(let bIdx=0;bIdx<balls.length;bIdx++){
+      const b=balls[bIdx];
+      if(!b.alive)continue;
+      const bThreads=ballThreads[bIdx];
+      if(!bThreads||!bThreads.length)continue;
+      const rx=(b.renderPrevX!==undefined&&simRunning)?b.renderPrevX+(b.x-b.renderPrevX)*alpha:b.x;
+      const ry=(b.renderPrevY!==undefined&&simRunning)?b.renderPrevY+(b.y-b.renderPrevY)*alpha:b.y;
+      const br=b.r;
+
+      ctx.strokeStyle=b.color;
+      ctx.globalAlpha=.68;
+      ctx.lineWidth=.85;
+      ctx.beginPath();
+      for(let sIdx=0;sIdx<bThreads.length;sIdx++){
+        const strand=bThreads[sIdx];
+        if(strand.cutAt>=0)continue;
+        const bx=strand.bx,by=strand.by;
+        const ddx=bx-rx,ddy=by-ry;
+        const len=Math.hypot(ddx,ddy);
+        if(len<=br)continue;
+        const inv=1/len;
+        ctx.moveTo(rx+ddx*inv*br,ry+ddy*inv*br);
+        ctx.lineTo(bx,by);
+      }
+      ctx.stroke();
+
+      ctx.fillStyle=b.color;
+      ctx.globalAlpha=.95;
+      ctx.beginPath();
+      for(let sIdx=0;sIdx<bThreads.length;sIdx++){
+        const strand=bThreads[sIdx];
+        if(strand.cutAt>=0)continue;
+        const bx=strand.bx,by=strand.by;
+        ctx.moveTo(bx+1.65,by);
+        ctx.arc(bx,by,1.65,0,TAU);
+      }
+      ctx.fill();
     }
     ctx.restore();
   }
-  function drawBall(b,t){
-    const {x,y,r}=b;
-    if(false&&b.trail.length>=2){for(let i=1;i<b.trail.length;i++){const p=b.trail[i],p0=b.trail[i-1];ctx.strokeStyle=b.color+(Math.floor(i*7+12).toString(16).padStart(2,'0'));ctx.lineWidth=r*.55*i/b.trail.length;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(p.x,p.y);ctx.stroke();}}
-    ctx.save();
-    ctx.shadowBlur=25+b.glow*16;ctx.shadowColor=b.color;
-    ctx.fillStyle='#08131c';ctx.beginPath();ctx.arc(x,y,r+5,0,TAU);ctx.fill();
-    ctx.shadowBlur=0;ctx.fillStyle=b.color;ctx.beginPath();ctx.arc(x,y,r+4,0,TAU);ctx.fill();
-    ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.clip();
+  function updateBallFace(b){
+    const r=b.r, d=Math.ceil(r*2);
+    if(!b.faceCanvas) b.faceCanvas=document.createElement('canvas');
+    b.faceCanvas.width=d;b.faceCanvas.height=d;
+    const fc=b.faceCanvas.getContext('2d');
+    fc.clearRect(0,0,d,d);
+    fc.save();
+    fc.beginPath();fc.arc(r,r,r,0,TAU);fc.clip();
     const pic=getImage(b.src);
     if(pic){
-      const scale=Math.max(r*2/pic.width,r*2/pic.height), w=pic.width*scale,h=pic.height*scale;
-      ctx.drawImage(pic,x-w/2,y-h/2,w,h);
-    } else {
-      const gradient=ctx.createLinearGradient(x-r,y-r,x+r,y+r);gradient.addColorStop(0,'#d7e7fa');gradient.addColorStop(1,'#314a68');ctx.fillStyle=gradient;ctx.fillRect(x-r,y-r,r*2,r*2);
-      const label=avatarText(b.name);text(x,y-1,label,label.length>2?23:25,'#071529',900);
+      const scale=Math.max(d/pic.width,d/pic.height),w=pic.width*scale,h=pic.height*scale;
+      fc.drawImage(pic,r-w/2,r-h/2,w,h);
+    }else{
+      const gradient=fc.createLinearGradient(0,0,d,d);
+      gradient.addColorStop(0,'#d7e7fa');gradient.addColorStop(1,'#314a68');
+      fc.fillStyle=gradient;fc.fillRect(0,0,d,d);
+      const label=avatarText(b.name);
+      fc.font=`900 ${label.length>2?23:25}px Inter,Arial,sans-serif`;
+      fc.fillStyle='#071529';fc.textAlign='center';fc.textBaseline='middle';
+      fc.fillText(label,r,r-1);
     }
-    const sheen=ctx.createLinearGradient(x-r,y-r,x+r,y+r);sheen.addColorStop(0,'#ffffff47');sheen.addColorStop(.46,'#ffffff00');sheen.addColorStop(1,'#00000022');ctx.fillStyle=sheen;ctx.fillRect(x-r,y-r,r*2,r*2);
+    const sheen=fc.createLinearGradient(0,0,d,d);
+    sheen.addColorStop(0,'#ffffff47');sheen.addColorStop(.46,'#ffffff00');sheen.addColorStop(1,'#00000022');
+    fc.fillStyle=sheen;fc.fillRect(0,0,d,d);
+    fc.restore();
+    b.faceRadius=r;b.faceName=b.name;b.faceSrc=b.src;
+  }
+  function drawBall(b,rx=b.x,ry=b.y){
+    const r=b.r;
+    ctx.save();
+    ctx.shadowBlur=25+b.glow*16;ctx.shadowColor=b.color;
+    ctx.fillStyle='#08131c';ctx.beginPath();ctx.arc(rx,ry,r+5,0,TAU);ctx.fill();
+    ctx.shadowBlur=0;ctx.fillStyle=b.color;ctx.beginPath();ctx.arc(rx,ry,r+4,0,TAU);ctx.fill();
     ctx.restore();
-    ctx.beginPath();ctx.arc(x,y,r+4,0,TAU);ctx.strokeStyle=b.color;ctx.lineWidth=2;ctx.stroke();
-    ctx.shadowBlur=8;ctx.shadowColor='#000';text(x,y+r+24,String(Math.ceil(b.hp)),18,'#fff',900);ctx.shadowBlur=0;
-    // Full names remain editable in the control room; Shorts show portraits + HP only.
+
+    if(!b.faceCanvas||b.faceRadius!==r||b.faceName!==b.name||b.faceSrc!==b.src)updateBallFace(b);
+    ctx.drawImage(b.faceCanvas,rx-r,ry-r);
+
+    ctx.beginPath();ctx.arc(rx,ry,r+4,0,TAU);ctx.strokeStyle=b.color;ctx.lineWidth=2;ctx.stroke();
+    ctx.shadowBlur=8;ctx.shadowColor='#000';text(rx,ry+r+24,String(Math.ceil(b.hp)),18,'#fff',900);ctx.shadowBlur=0;
   }
   function drawParticles(){
-    for(const p of particles){ctx.globalAlpha=clamp(1-p.t/p.life,0,1);ctx.fillStyle=p.color;ctx.shadowColor=p.color;ctx.shadowBlur=9;ctx.beginPath();ctx.arc(p.x,p.y,Math.max(0,p.size*(1-p.t/p.life)),0,TAU);ctx.fill();}
-    ctx.shadowBlur=0;ctx.globalAlpha=1;
+    if(particles.length){
+      ctx.shadowBlur=9;
+      let lastColor='';
+      for(const p of particles){
+        ctx.globalAlpha=clamp(1-p.t/p.life,0,1);
+        if(p.color!==lastColor){
+          ctx.fillStyle=p.color;
+          ctx.shadowColor=p.color;
+          lastColor=p.color;
+        }
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,Math.max(0,p.size*(1-p.t/p.life)),0,TAU);
+        ctx.fill();
+      }
+      ctx.shadowBlur=0;
+      ctx.globalAlpha=1;
+    }
     for(const r of rings){
       ctx.save();
       if(r.maxRadius){ctx.beginPath();ctx.arc(CENTER.x,CENTER.y,CENTER.r-2,0,TAU);ctx.clip();}
@@ -581,40 +775,75 @@
     ctx.strokeStyle=b.color;ctx.lineWidth=2;rrect(55,464,610,355,36);ctx.stroke();
     ctx.shadowColor=b.color;ctx.shadowBlur=40;ctx.beginPath();ctx.arc(360,568,71,0,TAU);ctx.fillStyle=b.color;ctx.fill();ctx.shadowBlur=0;
     // Central portrait by reusing the contender renderer with a single static circle.
-    const orig={x:b.x,y:b.y,r:b.r};b.x=360;b.y=568;b.r=65;
-    const previousTrail=b.trail;b.trail=[];drawBall(b,elapsed);b.trail=previousTrail;
-    b.x=orig.x;b.y=orig.y;b.r=orig.r;
+    const origR=b.r;b.r=65;
+    const previousTrail=b.trail;b.trail=[];drawBall(b,360,568);b.trail=previousTrail;
+    b.r=origR;
     text(360,681,'WINNER!',49,'#ffffff',900);
     text(360,733,cleanLabel(b.name).toUpperCase(),33,b.color,900);
     text(360,781,b.winReason||'THE LAST BALL STANDING',14,'#a9c3d8',800,'center',2);
     ctx.restore();
   }
-  function draw(){
+  function draw(alpha=1){
     if(!ctx)return;
     const k=canvas.width/VW;ctx.setTransform(k,0,0,k,0,0);
     drawBackground(elapsed);
     drawHeader(elapsed);
     drawArena(elapsed);
-    drawThreads(elapsed);
+    drawThreads(alpha);
     drawParticles();
-    const sorted=balls.filter(b=>b.alive).slice().sort((a,b)=>a.y-b.y);
-    sorted.forEach(b=>drawBall(b,elapsed));
+    const sorted=balls.filter(b=>b.alive).slice().sort((a,b)=>{
+      const ay=(a.renderPrevY!==undefined&&simRunning)?a.renderPrevY+(a.y-a.renderPrevY)*alpha:a.y;
+      const by=(b.renderPrevY!==undefined&&simRunning)?b.renderPrevY+(b.y-b.renderPrevY)*alpha:b.y;
+      return ay-by;
+    });
+    sorted.forEach(b=>{
+      const rx=(b.renderPrevX!==undefined&&simRunning)?b.renderPrevX+(b.x-b.renderPrevX)*alpha:b.x;
+      const ry=(b.renderPrevY!==undefined&&simRunning)?b.renderPrevY+(b.y-b.renderPrevY)*alpha:b.y;
+      drawBall(b,rx,ry);
+    });
     drawAnnouncements();
     drawFooter();
     if(winner){/* Keep the surviving ball visible without a winner overlay. */}
     else if(finished){ctx.save();ctx.fillStyle='#0a122adf';rrect(90,465,540,250,26);ctx.fill();text(360,556,"TIME'S UP",43,'#f8fbff',900);text(360,620,'NO FORCED ELIMINATIONS',22,'#b1d7ef',800);ctx.restore();}
   }
   function frame(stamp){
-    let dt=lastStamp?clamp((stamp-lastStamp)/1000,0,.05):0;lastStamp=stamp;
-    if(simRunning){let remaining=dt;while(remaining>0&&simRunning){const tick=Math.min(remaining,1/120);step(tick);remaining-=tick;}}else step(dt);if(finished){elapsed+=dt;animateEffects(dt);}
-    draw();
-    if(recording&&finished&&elapsed>=finishedAt+2.4)stopRecording();
-    raf=requestAnimationFrame(frame);
+    if(!lastStamp) lastStamp = stamp;
+    let dt = (stamp - lastStamp) / 1000;
+    lastStamp = stamp;
+    if(dt > 0.1) dt = 0.1;
+
+    if(simRunning){
+      accumulator += dt;
+      if(accumulator > 0.15) accumulator = 0.15;
+      while(accumulator >= FIXED_DT && simRunning){
+        for(let i=0; i<balls.length; i++){
+          const b = balls[i];
+          b.renderPrevX = b.x;
+          b.renderPrevY = b.y;
+        }
+        step(FIXED_DT);
+        accumulator -= FIXED_DT;
+      }
+    } else {
+      accumulator = 0;
+      step(dt);
+    }
+
+    if(finished){
+      elapsed += dt;
+      animateEffects(dt);
+    }
+
+    const alpha = simRunning ? clamp(accumulator / FIXED_DT, 0, 1) : 1;
+    draw(alpha);
+
+    if(recording && finished && elapsed >= finishedAt + 2.4) stopRecording();
+    raf = requestAnimationFrame(frame);
   }
   function setCanvasResolution(n){
     canvas.width=n;canvas.height=Math.round(n*16/9);
     $('previewResolution').textContent=`${canvas.width} × ${canvas.height}`;
-    draw();
+    draw(1);
   }
   function streamMime(){
     if(!('MediaRecorder' in window))return '';
