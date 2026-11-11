@@ -184,9 +184,16 @@
   let accumulator = 0, bgCanvas = null;
   let recorder=null, chunks=[], recording=false, finishedAt=-1;
   let audioContext=null, audioDestination=null, toastTimeout;
-  let snapBuffers=[],ripBus=null,ripOutput=null,audioReady=Promise.resolve();
-  const activeRipSources=new Set(), activeRipNodes=[];
-  let lastCollisionTime=0, lastEliminationTime=0, lastStringSoundTime=-10, duelClock=0, mark=0;
+  // Realistic Taut String Audio Engine
+  const NUM_SNAP_BUFFERS = 12;
+  const MAX_CONCURRENT_SNAP_VOICES = 4;
+  const SNAP_MICRO_SPACING = 0.016; // 16ms between audible snaps in a burst
+  const MAX_BURST_QUEUE_LATENCY = 0.048; // 48ms maximum queue latency window
+
+  let snapBuffers=[], ripBus=null, ripOutput=null, audioReady=Promise.resolve();
+  let nextAvailableSnapTime=0, snapVariationCounter=0;
+  const activeSnapVoices=[];
+  let lastCollisionTime=0, lastEliminationTime=0, duelClock=0, mark=0;
   let colorTheme = 'neon';
   const config = () => ({
     title:$('headline').value.trim() || 'WHO WILL WIN?',
@@ -476,7 +483,7 @@
   function reset(autoStart=false){
     if(recording&&!autoStart)return toast('Stop recording before resetting.');
     stopRip();
-    seed=50483;elapsed=0;finished=false;winner=null;finishedAt=-1;lastCollisionTime=0;lastEliminationTime=0;lastStringSoundTime=-10;duelClock=0;pairContacts.clear();stringsGained=0;mark=0;particles=[];rings=[];announcements=[];cutCount=0;
+    seed=50483;elapsed=0;finished=false;winner=null;finishedAt=-1;lastCollisionTime=0;lastEliminationTime=0;duelClock=0;pairContacts.clear();stringsGained=0;mark=0;particles=[];rings=[];announcements=[];cutCount=0;
     accumulator=0;
     if(musicAudio){musicAudio.pause();musicAudio.currentTime=0;if(autoStart)startMusic();}
     balls=slots.map((slot,i)=>makeBall(slot,i,slots.length));createThreads();
@@ -501,23 +508,92 @@
     const dur=config().duration;$('durationLabel').textContent=`${Math.floor(dur/60)}:${String(dur%60).padStart(2,'0')}`;
     $('timelineProgress').style.width=`${clamp(elapsed/dur*100,0,100)}%`;
   }
+  function initSnapBuffers(ac) {
+    if (snapBuffers.length === NUM_SNAP_BUFFERS) return;
+    snapBuffers = [];
+    const sampleRate = ac.sampleRate || 48000;
+    const duration = 0.095; // 95 ms - fast, crisp taut snap
+    const numSamples = Math.floor(sampleRate * duration);
+
+    for (let v = 0; v < NUM_SNAP_BUFFERS; v++) {
+      const audioBuf = ac.createBuffer(1, numSamples, sampleRate);
+      const channel = audioBuf.getChannelData(0);
+
+      // Micro-variation parameters based on thin high-tension filament acoustics
+      const baseTension = 1.0 + ((v % 5) - 2) * 0.035;
+      const fStart = (2750 + ((v * 197) % 380)) * baseTension;
+      const fEnd = (1420 + ((v * 131) % 190)) * baseTension;
+      const pitchDecayTime = 0.013 + ((v * 37) % 6) * 0.001; // 13-18 ms pitch dive
+      const amplitudeDecay = 0.042 + ((v * 59) % 8) * 0.002; // 42-56 ms decay
+      const snapBrightness = 0.52 + ((v * 73) % 5) * 0.04;
+
+      let phase1 = 0;
+      let phase2 = 0;
+      let prevNoise = 0;
+
+      for (let i = 0; i < numSamples; i++) {
+        const t = i / sampleRate;
+
+        // 1. Initial rupture impulse (sharp high-frequency snap, first 2.5 ms)
+        const whiteNoise = (Math.random() * 2 - 1);
+        const snapCrack = whiteNoise - prevNoise * 0.82;
+        prevNoise = whiteNoise;
+        const crackEnv = Math.exp(-t / 0.0022); // 2.2 ms decay
+        const transient = snapCrack * crackEnv * snapBrightness;
+
+        // 2. Initial micro-shockwave (first 1.2 ms asymmetric pulse)
+        let shockwave = 0;
+        if (t < 0.0012) {
+          shockwave = Math.sin((t / 0.0012) * Math.PI) * 0.42;
+        }
+
+        // 3. Elastic tension dive ("TWING" body)
+        const curFreq = fEnd + (fStart - fEnd) * Math.exp(-t / pitchDecayTime);
+        phase1 += (2 * Math.PI * curFreq) / sampleRate;
+
+        // Dispersion overtone (second transverse mode, slightly inharmonic)
+        const overtoneFreq = curFreq * 2.38;
+        phase2 += (2 * Math.PI * overtoneFreq) / sampleRate;
+
+        const bodyWave = Math.sin(phase1 + 0.3 * Math.sin(2 * phase1));
+        const s2 = Math.sin(phase2);
+        const overtoneEnv = Math.exp(-t / 0.018); // overtone decays rapidly
+
+        const bodySignal = (bodyWave * 0.72 + s2 * 0.28 * overtoneEnv);
+
+        // Amplitude envelope: instant attack (<0.4 ms), exponential decay
+        const attack = Math.min(1, t / 0.0004);
+        const mainEnv = attack * Math.exp(-t / amplitudeDecay);
+
+        // Clean tail fade-out to guarantee 0 DC and 0 clicks
+        const tailFade = t > (duration - 0.008) ? (duration - t) / 0.008 : 1.0;
+
+        let sample = (transient + shockwave + bodySignal * mainEnv) * tailFade;
+        sample = Math.tanh(sample * 1.35) * 0.82;
+
+        channel[i] = sample;
+      }
+
+      snapBuffers.push(audioBuf);
+    }
+  }
+
   function ensureAudio(){
     const AC=window.AudioContext||window.webkitAudioContext;
     if(!AC)return;
     if(!audioContext){
       audioContext=new AC();
-      audioReady=Promise.all(REFERENCE_SNAPS.map(async uri=>{
-        const raw=atob(uri.split(',')[1]);const bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));return audioContext.decodeAudioData(bytes.buffer);
-      })).then(buffers=>snapBuffers=buffers).catch(()=>toast('Audio samples could not load.'));
+      initSnapBuffers(audioContext);
+      audioReady=Promise.resolve();
       audioDestination=audioContext.createMediaStreamDestination();
       ripBus=audioContext.createGain();ripBus.gain.value=config().sfxVolume;
 
       const limiter=audioContext.createDynamicsCompressor();
-      limiter.threshold.setValueAtTime(-4,audioContext.currentTime);
-      limiter.knee.setValueAtTime(6,audioContext.currentTime);
-      limiter.ratio.setValueAtTime(12,audioContext.currentTime);
-      limiter.attack.setValueAtTime(0.002,audioContext.currentTime);
-      limiter.release.setValueAtTime(0.05,audioContext.currentTime);
+      limiter.threshold.setValueAtTime(-3,audioContext.currentTime);
+      limiter.knee.setValueAtTime(4,audioContext.currentTime);
+      limiter.ratio.setValueAtTime(14,audioContext.currentTime);
+      limiter.attack.setValueAtTime(0.001,audioContext.currentTime);
+      limiter.release.setValueAtTime(0.04,audioContext.currentTime);
 
       ripBus.connect(limiter);
       limiter.connect(audioContext.destination);
@@ -534,47 +610,123 @@
     ripBus.gain.value=config().sfxVolume;
   }
   function stopRip(){
-    while(activeRipNodes.length){
-      const v=activeRipNodes.pop();
+    nextAvailableSnapTime=0;
+    while(activeSnapVoices.length){
+      const v=activeSnapVoices.pop();
       try{v.source.stop();v.source.disconnect();v.gain.disconnect();}catch(e){}
     }
   }
-  function playRip(force=false){
+  function playSnap(options={},force=false){
     const cfg=config();if(!force&&(!cfg.threads||!cfg.ripSounds))return;
     if(!audioContext||audioContext.state!=='running'||!snapBuffers.length)return;
-    const now=audioContext.currentTime;
-    if(!force&&(now-lastStringSoundTime<STRING_SOUND_MIN_INTERVAL))return;
-    lastStringSoundTime=now;
 
-    for(let i=activeRipNodes.length-1;i>=0;i--){
-      if(activeRipNodes[i].ended)activeRipNodes.splice(i,1);
+    const now=audioContext.currentTime;
+    if(nextAvailableSnapTime<now){
+      nextAvailableSnapTime=now;
     }
-    while(activeRipNodes.length>=MAX_CONCURRENT_BREAK_SOUNDS){
-      const oldest=activeRipNodes.shift();
+
+    let scheduleTime=nextAvailableSnapTime;
+
+    // In a massive cluster cut, cap queue horizon so sounds NEVER lag behind the physics
+    if(!force&&(scheduleTime-now>MAX_BURST_QUEUE_LATENCY)){
+      if(activeSnapVoices.length>0){
+        const lastVoice=activeSnapVoices[activeSnapVoices.length-1];
+        if(lastVoice&&!lastVoice.ended){
+          try{
+            const curVal=lastVoice.gain.gain.value;
+            lastVoice.gain.gain.setValueAtTime(curVal,now);
+            lastVoice.gain.gain.linearRampToValueAtTime(Math.min(1.2,curVal*1.06),now+0.004);
+          }catch(e){}
+        }
+      }
+      return;
+    }
+
+    // Schedule next available slot with micro-spacing
+    nextAvailableSnapTime=scheduleTime+SNAP_MICRO_SPACING;
+
+    // Prune finished voices
+    for(let i=activeSnapVoices.length-1;i>=0;i--){
+      if(activeSnapVoices[i].ended||now>activeSnapVoices[i].endTime+0.01){
+        activeSnapVoices.splice(i,1);
+      }
+    }
+
+    // Voice stealing: ensure simultaneous voices never exceed limit
+    while(activeSnapVoices.length>=MAX_CONCURRENT_SNAP_VOICES){
+      const oldest=activeSnapVoices.shift();
       try{
-        oldest.gain.gain.setValueAtTime(oldest.gain.gain.value,now);
-        oldest.gain.gain.linearRampToValueAtTime(0,now+0.006);
-        oldest.source.stop(now+0.006);
+        oldest.gain.gain.setValueAtTime(oldest.gain.gain.value,scheduleTime);
+        oldest.gain.gain.linearRampToValueAtTime(0,scheduleTime+0.004);
+        oldest.source.stop(scheduleTime+0.005);
       }catch(e){}
     }
 
+    // Variation selection: deterministic variation based on strand ID + counter
+    const varSeed=(options.k!==undefined?options.k+(options.ownerId||0)*11:snapVariationCounter++);
+    const bufIndex=Math.abs(varSeed)%snapBuffers.length;
+    const buffer=snapBuffers[bufIndex];
+
     const source=audioContext.createBufferSource();
-    source.buffer=snapBuffers[0];source.playbackRate.value=1;source.loop=false;
+    source.buffer=buffer;
+
+    // Natural physical variations:
+    // 1. Cut position along strand (near ball = slightly higher tension/pitch, near rim = slightly deeper twang)
+    const cutPos=options.cutR!==undefined?options.cutR:0.5;
+    const posPitchShift=1.0+(0.5-cutPos)*0.06;
+
+    // 2. Ball cutting velocity (faster slice = subtly sharper transient & pitch)
+    const cutSpeed=options.speed!==undefined?options.speed:300;
+    const speedRatio=clamp(cutSpeed/300,0.75,1.4);
+    const speedPitchShift=1.0+(speedRatio-1.0)*0.04;
+
+    // 3. Subtle random detune (±2.5%)
+    const microDetune=0.975+Math.random()*0.05;
+
+    source.playbackRate.setValueAtTime(posPitchShift*speedPitchShift*microDetune,scheduleTime);
+
+    // Dynamic voice gain management
+    const polyphonyDamping=1.0/Math.sqrt(Math.max(1,activeSnapVoices.length+1));
+    const speedVolume=0.90+(speedRatio-1.0)*0.15;
+    const voiceVolume=clamp(speedVolume*polyphonyDamping,0.55,1.1);
+
     const voiceGain=audioContext.createGain();
-    voiceGain.gain.value=1;
+    voiceGain.gain.setValueAtTime(voiceVolume,scheduleTime);
+    voiceGain.gain.exponentialRampToValueAtTime(0.0001,scheduleTime+0.095);
+
     source.connect(voiceGain);
     voiceGain.connect(ripBus);
 
-    const voiceEntry={source,gain:voiceGain,startTime:now,ended:false};
-    activeRipNodes.push(voiceEntry);
+    const voiceEntry={
+      source,
+      gain:voiceGain,
+      startTime:scheduleTime,
+      endTime:scheduleTime+0.095,
+      ended:false
+    };
+    activeSnapVoices.push(voiceEntry);
+
     source.onended=()=>{
       voiceEntry.ended=true;
-      try{source.disconnect();voiceGain.disconnect();}catch(e){}
-      const idx=activeRipNodes.indexOf(voiceEntry);
-      if(idx>=0)activeRipNodes.splice(idx,1);
+      try{
+        source.disconnect();
+        voiceGain.disconnect();
+      }catch(e){}
+      const idx=activeSnapVoices.indexOf(voiceEntry);
+      if(idx>=0)activeSnapVoices.splice(idx,1);
     };
-    source.start();
+
+    source.start(scheduleTime);
   }
+  function playRip(force=false){
+    playSnap({},force);
+  }
+  window.audioEngine = {
+    getBuffersCount: () => snapBuffers.length,
+    getActiveVoicesCount: () => activeSnapVoices.length,
+    playSnap,
+    getAudioContext: () => audioContext
+  };
   function configureMusicSource(){
     if(!audioContext||!musicAudio||musicSource)return;
     musicSource=audioContext.createMediaElementSource(musicAudio);
@@ -604,12 +756,14 @@
     const sc=Math.abs(sn)<EPS?0:sn/sD,tc=Math.abs(tn)<EPS?0:tn/tD;
     return Math.hypot(wx+sc*ux-tc*vx,wy+sc*uy-tc*vy);
   }
-  function snapThread(strand,x,y,position){
+  function snapThread(strand,x,y,position,cuttingBall){
     const owner=balls[strand.owner];
     if(finished||strand.cutAt>=0||!owner?.alive)return false;
     strand.cutAt=elapsed;strand.cutR=position;cutCount++;
     addParticles(x,y,owner.color,2,70);
-    owner.hp=Math.max(0,owner.hp-1);owner.glow=1;playRip();
+    owner.hp=Math.max(0,owner.hp-1);owner.glow=1;
+    const speed = cuttingBall ? Math.hypot(cuttingBall.vx, cuttingBall.vy) : 300;
+    playSnap({ cutR: position, speed, ownerId: strand.owner, k: strand.k });
     if(owner.hp<=0)eliminate(owner);
     return true;
   }
@@ -680,7 +834,7 @@
           const gLen=olen-or_;
           const t=clamp(((ball.x-oax)*oUnitX+(ball.y-oay)*oUnitY)/gLen,.06,.94);
           const px=oax+(obx-oax)*t,py=oay+(oby-oay)*t;
-          if(snapThread(strand,px,py,t)){
+          if(snapThread(strand,px,py,t,ball)){
             ball.glow=.7;
             ball.lastCut=elapsed;
             cuts++;
