@@ -32,11 +32,150 @@
   const STRING_SOUND_MIN_INTERVAL = 0.055;
   const MAX_CONCURRENT_BREAK_SOUNDS = 2;
 
+  // Auto Save & Persistence (localStorage for config, IndexedDB for assets)
+  const STORAGE_KEY = 'ballbattlee_studio_v20_config';
+  const STORAGE_VERSION = 20;
+  const IDB_NAME = 'BallBattleeStudioDB';
+  const IDB_VERSION = 1;
+  const IDB_STORE = 'assets';
+  const AUTOSAVE_DELAY_MS = 500;
+  let autoSaveTimer = null, pendingSaveWhileRunning = false;
+  let idbPromise = null;
+
+  function getIDB() {
+    if (idbPromise) return idbPromise;
+    idbPromise = new Promise(resolve => {
+      if (!window.indexedDB) return resolve(null);
+      try {
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = e => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => {
+          console.warn('IndexedDB open error:', req.error);
+          resolve(null);
+        };
+      } catch (err) {
+        console.warn('IndexedDB init exception:', err);
+        resolve(null);
+      }
+    });
+    return idbPromise;
+  }
+
+  async function idbSet(key, val) {
+    try {
+      const db = await getIDB();
+      if (!db) return false;
+      return new Promise(resolve => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(val, key);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      });
+    } catch (e) {
+      console.warn('idbSet exception:', e);
+      return false;
+    }
+  }
+
+  async function idbGet(key) {
+    try {
+      const db = await getIDB();
+      if (!db) return null;
+      return new Promise(resolve => {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      });
+    } catch (e) {
+      console.warn('idbGet exception:', e);
+      return null;
+    }
+  }
+
+  function getStoragePayload() {
+    const rawCount = $('count') ? Number($('count').value) : 8;
+    return {
+      version: STORAGE_VERSION,
+      timestamp: Date.now(),
+      settings: {
+        title: $('headline') ? $('headline').value.trim() : 'WHO WILL WIN?',
+        duration: $('duration') ? Number($('duration').value) : 30,
+        speed: $('speed') ? Number($('speed').value) : 1,
+        count: [4, 6, 8, 10, 12].includes(rawCount) ? rawCount : 8,
+        theme: $('theme') ? $('theme').value : 'neon',
+        quality: $('quality') ? Number($('quality').value) : 1080,
+        threads: $('threads') ? $('threads').checked : true,
+        ripSounds: $('ripSounds') ? $('ripSounds').checked : true,
+        density: $('density') ? Number($('density').value) : 110,
+        cutDamage: $('cutDamage') ? Number($('cutDamage').value) : 3,
+        slowmo: $('slowmo') ? $('slowmo').value : 'off',
+        sfxVolume: $('sfxVolume') ? Number($('sfxVolume').value) : 75,
+        musicVolume: $('musicVolume') ? Number($('musicVolume').value) : 35,
+        cta: $('cta') ? $('cta').checked : true,
+        guarantee: $('guarantee') ? $('guarantee').checked : false
+      },
+      slots: cachedSlotsPool.map(s => ({
+        name: s.name,
+        color: s.color,
+        hasImage: Boolean(s.src)
+      }))
+    };
+  }
+
+  function doSaveSync() {
+    try {
+      const payload = getStoragePayload();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {
+      console.warn('AutoSave to localStorage failed:', e);
+    }
+  }
+
+  async function doSave() {
+    doSaveSync();
+    try {
+      const existingImages = (await idbGet('player_images')) || [];
+      const mergedImages = [...existingImages];
+      cachedSlotsPool.forEach((s, i) => {
+        mergedImages[i] = s.src || null;
+      });
+      await idbSet('player_images', mergedImages);
+    } catch (e) {
+      console.warn('AutoSave images to IndexedDB failed:', e);
+    }
+  }
+
+  function scheduleAutoSave(immediate = false) {
+    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    if (immediate && !simRunning) {
+      persistState();
+    } else {
+      autoSaveTimer = setTimeout(persistState, AUTOSAVE_DELAY_MS);
+    }
+  }
+
+  function persistState() {
+    autoSaveTimer = null;
+    if (simRunning) {
+      pendingSaveWhileRunning = true;
+      return;
+    }
+    pendingSaveWhileRunning = false;
+    doSave();
+  }
+
   const pairContacts = new Set();
   const colors = ['#f8c242','#e66c5b','#9a72ec','#42bafa','#25bd93','#f0f4fc','#ff9468','#27d1d0','#ff5ca8','#a9ca45','#ba92f5','#ffb950'];
   const stars = Array.from({length:130}, (_,i)=>({x:fract(Math.sin(i * 127.1) * 58372.1)*VW, y:fract(Math.sin(i * 62.7) * 32292.9)*VH, a: .10 + fract(Math.sin(i * 91.3) * 131.7)*.22,r: i%6===0?1.25:.55}));
   function fract(n){return n-Math.floor(n)}
-  let slots = [];
+  let slots = [], cachedSlotsPool = [];
   let imageCache = new Map();
   let balls = [], particles=[], rings=[], threads=[], announcements=[], ballThreads=[];
   let cutCount=0, stringsGained=0, musicAudio=null, musicSource=null, musicGain=null, musicObjectUrl=null;
@@ -83,8 +222,10 @@
   }
   function resizeSlots(count){
     const defaults=defaultSlots(count);
-    slots=defaults.map((slot,i)=>slots[i]||slot);
+    slots=defaults.map((def,i)=>cachedSlotsPool[i]||def);
+    slots.forEach((s, idx) => { cachedSlotsPool[idx] = s; });
     makePlayerUI();reset();
+    scheduleAutoSave(true);
   }
   function getImage(src){
     if(!src)return null;
@@ -111,13 +252,24 @@
         const file=e.target.files?.[0];if(!file)return;
         if(!file.type.startsWith('image/')){toast('Select an image file.');return;}
         if(file.size>12*1024*1024){toast('Please choose an image under 12 MB.');return;}
-        try {slot.src=await resizeImage(file);getImage(slot.src);makePlayerUI();reset();toast(`${slot.name}: picture added.`);}
+        try {
+          slot.src=await resizeImage(file);
+          if(cachedSlotsPool[i])cachedSlotsPool[i].src=slot.src;
+          getImage(slot.src);makePlayerUI();reset();
+          scheduleAutoSave(true);
+          toast(`${slot.name}: picture added.`);
+        }
         catch(e){console.error(e);toast('Could not load this image.');}
       });
       let info=document.createElement('div');info.className='player-cell';
       const number=document.createElement('div');number.className='playnum';number.textContent=`BALL ${String(i+1).padStart(2,'0')}`;
       const input=document.createElement('input');input.setAttribute('aria-label',`Ball ${i+1} name`);input.maxLength=20;input.value=slot.name;
-      input.addEventListener('input',()=>{slot.name=input.value||'PLAYER';let b=balls[i];if(b)b.name=slot.name;});
+      input.addEventListener('input',()=>{
+        slot.name=input.value||'PLAYER';
+        if(cachedSlotsPool[i])cachedSlotsPool[i].name=slot.name;
+        let b=balls[i];if(b)b.name=slot.name;
+        scheduleAutoSave();
+      });
       info.append(number,input);cell.append(label,info,inputFile);list.appendChild(cell);
     });
   }
@@ -153,7 +305,15 @@
       faceCanvas:null,faceRadius:0,faceName:'',faceSrc:null
     };
   }
-  function setRunning(run){simRunning=run;$('playText').textContent=run?'Pause simulation':finished?'Replay simulation':'Start simulation';$('playIcon').textContent=run?'Ⅱ':'▶';}
+  function setRunning(run){
+    simRunning=run;
+    $('playText').textContent=run?'Pause simulation':finished?'Replay simulation':'Start simulation';
+    $('playIcon').textContent=run?'Ⅱ':'▶';
+    if(!run && pendingSaveWhileRunning){
+      pendingSaveWhileRunning=false;
+      doSave();
+    }
+  }
   // Each fiber joins its moving owner to a fixed point on the arena rim.
   function createThreads(){
     const density=config().density;
@@ -322,6 +482,10 @@
     balls=slots.map((slot,i)=>makeBall(slot,i,slots.length));createThreads();
     initBgCanvas();
     setRunning(autoStart);updateStats();draw(1);
+    if(pendingSaveWhileRunning){
+      pendingSaveWhileRunning=false;
+      doSave();
+    }
   }
   function updateStats(){
     const total=slots.length,num=alive().length;
@@ -1005,7 +1169,10 @@
       for(const id of ['guarantee','threads','ripSounds','cta'])if(typeof s[id]==='boolean')$(id).checked=s[id];
       slots=data.slots.map((item,i)=>({name:String(item.name||`PLAYER ${i+1}`).slice(0,20),color: /^#[0-9a-fA-F]{6}$/.test(item.color)?item.color:colors[i],src:typeof item.src==='string'&&item.src.startsWith('data:image/')?item.src:null}));
       if(![4,6,8,10,12].includes(slots.length))throw new Error('This project needs 4, 6, 8, 10 or 12 players');
-      $('count').value=slots.length;imageCache.clear();slots.forEach(s=>getImage(s.src));makePlayerUI();reset();toast('Project loaded successfully.');
+      $('count').value=slots.length;imageCache.clear();
+      slots.forEach((s, idx)=>{ getImage(s.src); cachedSlotsPool[idx]=s; });
+      makePlayerUI();reset();toast('Project loaded successfully.');
+      scheduleAutoSave(true);
     }catch(e){toast('Could not load project: '+e.message)}
   }
   // Controls and lifecycle.
@@ -1021,8 +1188,20 @@
   $('recordBtn').addEventListener('click',startRecording);
   $('stopBtn').addEventListener('click',stopRecording);
   $('count').addEventListener('change',()=>{if(recording)return;resizeSlots(Number($('count').value))});
-  $('shufflePlayers').addEventListener('click',()=>{if(recording)return;for(let i=slots.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[slots[i],slots[j]]=[slots[j],slots[i]]}makePlayerUI();reset()});
-  for(const id of ['headline','theme','duration','speed','guarantee','cta','threads','density','cutDamage','slowmo'])$(id).addEventListener('change',()=>{if(!recording)reset()});
+  $('shufflePlayers').addEventListener('click',()=>{
+    if(recording)return;
+    for(let i=slots.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[slots[i],slots[j]]=[slots[j],slots[i]]}
+    slots.forEach((s, idx)=>{ cachedSlotsPool[idx]=s; });
+    makePlayerUI();reset();
+    scheduleAutoSave(true);
+  });
+  $('headline').addEventListener('input',()=>scheduleAutoSave());
+  for(const id of ['headline','theme','duration','speed','guarantee','cta','threads','density','cutDamage','slowmo','quality']){
+    $(id).addEventListener('change',()=>{
+      if(!recording&&id!=='quality')reset();
+      scheduleAutoSave();
+    });
+  }
   $('saveProject').addEventListener('click',saveProject);
   $('loadProject').addEventListener('click',()=>$('projectFile').click());
   $('projectFile').addEventListener('change',e=>{loadProject(e.target.files?.[0]);e.target.value=''});
@@ -1031,20 +1210,23 @@
       e.preventDefault();if(!recording)togglePlayback();
     }
   });
-  window.addEventListener('beforeunload',e=>{if(recording){e.preventDefault();e.returnValue='';}});
+  window.addEventListener('beforeunload',e=>{
+    if(recording){e.preventDefault();e.returnValue='';}
+    doSaveSync();
+  });
   function syncSliderLabels(){
     $('sfxVolumeReadout').textContent=$('sfxVolume').value+'%';
     $('musicVolumeReadout').textContent=$('musicVolume').value+'%';
     if(musicGain)musicGain.gain.value=config().musicVolume;
     updateRipMix();
   }
-  $('sfxVolume').addEventListener('input',syncSliderLabels);
-  $('musicVolume').addEventListener('input',syncSliderLabels);
+  $('sfxVolume').addEventListener('input',()=>{syncSliderLabels();scheduleAutoSave();});
+  $('musicVolume').addEventListener('input',()=>{syncSliderLabels();scheduleAutoSave();});
   $('testRip').addEventListener('click',async()=>{
     ensureAudio();await audioReady;if(audioContext?.state==='suspended')await audioContext.resume().catch(()=>{});
     playRip(true);
   });
-  $('musicFile').addEventListener('change',e=>{
+  $('musicFile').addEventListener('change',async e=>{
     const file=e.target.files?.[0];if(!file)return;
     if(!file.type.startsWith('audio/'))return toast('Choose an audio file.');
     if(file.size>40*1024*1024)return toast('Choose a music file under 40 MB.');
@@ -1056,6 +1238,133 @@
     if(audioContext)configureMusicSource();
     $('musicStatus').textContent='Loaded: '+file.name;
     toast('Music imported locally. It will play when you start a battle.');
+
+    try {
+      await idbSet('custom_music', {
+        name: file.name,
+        type: file.type,
+        blob: file,
+        lastModified: file.lastModified
+      });
+      scheduleAutoSave(true);
+    } catch(err) {
+      console.warn('Could not persist music file to IndexedDB:', err);
+    }
   });
-  slots=defaultSlots();makePlayerUI();syncSliderLabels();reset();raf=requestAnimationFrame(frame);
+
+  function restoreConfiguration(){
+    let saved=null;
+    try {
+      const raw=localStorage.getItem(STORAGE_KEY);
+      if(raw) saved=JSON.parse(raw);
+    } catch(e) {
+      console.warn('Failed to parse saved config from localStorage:', e);
+    }
+
+    if(saved && typeof saved === 'object'){
+      const s=saved.settings||{};
+      const set=(id,v)=>{if(v!==undefined&&v!==null&&$(id))$(id).value=String(v);};
+      if(typeof s.title==='string')$('headline').value=s.title.slice(0,35);
+      if([20,30,40,50,60].includes(Number(s.duration)))set('duration',s.duration);
+      if([0.75,1,1.4,1.85].includes(Number(s.speed)))set('speed',s.speed);
+      if([4,6,8,10,12].includes(Number(s.count)))set('count',s.count);
+      if(['neon','sunset','arctic'].includes(s.theme))set('theme',s.theme);
+      if([720,1080].includes(Number(s.quality)))set('quality',s.quality);
+      if([35,55,75,110].includes(Number(s.density)))set('density',s.density);
+      if([1,2,3].includes(Number(s.cutDamage)))set('cutDamage',s.cutDamage);
+      if(['on','off','all'].includes(s.slowmo))set('slowmo',s.slowmo);
+      if(Number.isFinite(Number(s.sfxVolume)))$('sfxVolume').value=String(clamp(Math.round(Number(s.sfxVolume)),0,100));
+      if(Number.isFinite(Number(s.musicVolume)))$('musicVolume').value=String(clamp(Math.round(Number(s.musicVolume)),0,100));
+      for(const id of ['guarantee','threads','ripSounds','cta']){
+        if(typeof s[id]==='boolean'&&$(id))$(id).checked=s[id];
+      }
+
+      const count=Number($('count').value)||8;
+      const defaults=defaultSlots(count);
+      const rawSlots=Array.isArray(saved.slots)?saved.slots:[];
+
+      cachedSlotsPool=defaults.map((def,i)=>{
+        const item=rawSlots[i];
+        if(!item)return def;
+        return {
+          name: typeof item.name==='string'&&item.name.trim()?item.name.trim().slice(0,20):def.name,
+          color: /^#[0-9a-fA-F]{6}$/.test(item.color)?item.color:def.color,
+          src: null,
+          hasImage: Boolean(item.hasImage)
+        };
+      });
+      for(let i=count;i<Math.min(rawSlots.length,12);i++){
+        const item=rawSlots[i];
+        if(item){
+          cachedSlotsPool[i]={
+            name: typeof item.name==='string'&&item.name.trim()?item.name.trim().slice(0,20):`PLAYER ${i+1}`,
+            color: /^#[0-9a-fA-F]{6}$/.test(item.color)?item.color:colors[i%colors.length],
+            src: null,
+            hasImage: Boolean(item.hasImage)
+          };
+        }
+      }
+      slots=cachedSlotsPool.slice(0,count);
+    } else {
+      slots=defaultSlots(8);
+      cachedSlotsPool=[...slots];
+    }
+
+    makePlayerUI();
+    syncSliderLabels();
+    reset(false);
+
+    restoreIndexedDBAssets();
+  }
+
+  async function restoreIndexedDBAssets(){
+    try {
+      const savedImages=await idbGet('player_images');
+      if(Array.isArray(savedImages)&&savedImages.length){
+        let changed=false;
+        savedImages.forEach((src,i)=>{
+          if(src&&typeof src==='string'&&src.startsWith('data:image/')){
+            if(cachedSlotsPool[i])cachedSlotsPool[i].src=src;
+            if(slots[i]){
+              slots[i].src=src;
+              getImage(src);
+              changed=true;
+            }
+          }
+        });
+        if(changed){
+          makePlayerUI();
+          balls.forEach(b=>{
+            const slot=slots[b.id];
+            if(slot&&slot.src){
+              b.src=slot.src;
+              b.faceSrc=null;
+            }
+          });
+          draw(1);
+        }
+      }
+    } catch(e) {
+      console.warn('Could not restore images from IndexedDB:', e);
+    }
+
+    try {
+      const musicAsset=await idbGet('custom_music');
+      if(musicAsset&&musicAsset.blob){
+        if(musicAudio)musicAudio.pause();
+        if(musicObjectUrl)URL.revokeObjectURL(musicObjectUrl);
+        musicObjectUrl=URL.createObjectURL(musicAsset.blob);
+        if(!musicAudio){musicAudio=new Audio();musicAudio.loop=true;}
+        musicAudio.src=musicObjectUrl;
+        musicAudio.load();
+        if(audioContext)configureMusicSource();
+        $('musicStatus').textContent='Loaded: '+(musicAsset.name||'custom music');
+      }
+    } catch(e) {
+      console.warn('Could not restore audio from IndexedDB:', e);
+    }
+  }
+
+  restoreConfiguration();
+  raf=requestAnimationFrame(frame);
 })();
