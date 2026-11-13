@@ -105,6 +105,7 @@
       version: STORAGE_VERSION,
       timestamp: Date.now(),
       settings: {
+        ...teamSettings(),
         title: $('headline') ? $('headline').value.trim() : 'WHO WILL WIN?',
         duration: $('duration') ? Number($('duration').value) : 30,
         speed: $('speed') ? Number($('speed').value) : 1,
@@ -314,12 +315,21 @@
       return cvs.toDataURL('image/jpeg',.85);
     }finally{URL.revokeObjectURL(url)}
   }
+  function teamSize(){ return Number($('battleMode').value)||0; }
+  function teammates(a,b){ return teamSize()>0 && a.team===b.team; }
+  function teamSettings(){ return {battleMode:$('battleMode').value,teamAColor:$('teamAColor').value,teamBColor:$('teamBColor').value}; }
+  function restoreTeams(s){
+    $('battleMode').value=['2','3','4'].includes(String(s.battleMode))?String(s.battleMode):'solo';
+    for(const id of ['teamAColor','teamBColor'])if(/^#[0-9a-f]{6}$/i.test(s[id]))$(id).value=s[id];
+    if(teamSize())$('count').value=String(teamSize()*2);
+    $('count').disabled=!!teamSize()||recording;
+  }
   function makeBall(slot,i,total){
     const angle=-1.84+(i+.5)*TAU/total, radius=CENTER.r-INITIAL_CIRCLE_RADIUS-16;
     const x=slot.x??CENTER.x+Math.cos(angle)*radius,y=slot.y??CENTER.y+Math.sin(angle)*radius;
     const direction=Math.atan2(CENTER.y-y,CENTER.x-x)+rand(-.32,.32),speed=125*config().speed;
     return {
-      name:slot.name,color:slot.color,src:slot.src,
+      name:slot.name,team:teamSize()?Math.floor(i/teamSize()):-1,color:teamSize()?$(i<teamSize()?'teamAColor':'teamBColor').value:slot.color,src:slot.src,
       x,y,prevX:x,prevY:y,renderPrevX:x,renderPrevY:y,
       vx:Math.cos(direction)*speed,vy:Math.sin(direction)*speed,
       hp:config().density,alive:true,
@@ -451,7 +461,7 @@
     return best;
   }
   function steerDuel(active,dt){
-    if(active.length!==2)return;
+    if(active.length!==2||teammates(active[0],active[1]))return;
     duelClock+=dt;
     const key=(Math.min(active[0].id,active[1].id)<<8)|Math.max(active[0].id,active[1].id);
     if(pairContacts.has(key))return;
@@ -805,7 +815,7 @@
       for(let oIdx=0;oIdx<balls.length;oIdx++){
         if(oIdx===ball.id)continue;
         const owner=balls[oIdx];
-        if(!owner||!owner.alive)continue;
+        if(!owner||!owner.alive||teammates(ball,owner))continue;
 
         const sMinX=Math.min(owner.x-owner.r,owner.prevX-owner.r);
         const sMaxX=Math.max(owner.x+owner.r,owner.prevX+owner.r);
@@ -883,7 +893,7 @@
       finalDuelSoundPlayed = true;
       playSfx('final_duel', { volume: 0.92 });
     }
-    if(remaining.length===1)declareWinner(remaining[0]);else updateStats();
+    if(remaining.length===1 || (teamSize() && new Set(remaining.map(b=>b.team)).size===1))declareWinner(remaining[0]);else updateStats();
   }
   function declareWinner(ball,reason=''){
     if(winner)return;
@@ -893,7 +903,7 @@
     setRunning(false);
     for(let i=0;i<4;i++)addParticles(ball.x,ball.y,ball.color,25,420);
     updateStats();
-    if(!recording)toast(`${cleanLabel(ball.name)} wins! Replay or record your own battle.`);
+    if(!recording)toast(teamSize()?`Team ${ball.team===0?'A':'B'} wins!`:`${cleanLabel(ball.name)} wins! Replay or record your own battle.`);
   }
   function step(dt){
     if(!simRunning){animateEffects(dt);return;}
@@ -1208,6 +1218,21 @@
     const title=config().title.toUpperCase();
     const size=title.length>24?36:title.length>17?41:45;
     ctx.save();ctx.shadowColor='#030509';ctx.shadowBlur=13;text(VW/2,214,title,Math.min(size,36),'#fff',900);ctx.restore();
+    if(teamSize()){
+      for(let team=0;team<2;team++){
+        const members=balls.filter(b=>b.team===team),cx=team===0?190:530;
+        text(cx,112,'TEAM '+(team===0?'A':'B'),22,$(team===0?'teamAColor':'teamBColor').value,900);
+        members.forEach((b,i)=>{
+          const r=23,x=cx+(i-(members.length-1)/2)*57,y=151;
+          ctx.save();ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.clip();ctx.fillStyle=b.color;ctx.fill();
+          const pic=getImage(b.src);if(pic)ctx.drawImage(pic,x-r,y-r,r*2,r*2);else text(x,y,avatarText(b.name),17,'#07111c',900);
+          ctx.restore();ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.strokeStyle=b.color;ctx.lineWidth=2;ctx.stroke();
+          if(!b.alive){ctx.save();ctx.strokeStyle='#ff233f';ctx.lineWidth=6;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x-16,y-16);ctx.lineTo(x+16,y+16);ctx.moveTo(x+16,y-16);ctx.lineTo(x-16,y+16);ctx.stroke();ctx.restore();}
+        });
+      }
+      text(360,247,winner?'TEAM '+(winner.team===0?'A':'B')+' WINS':balls.filter(b=>b.team===0&&b.alive).length+' VS '+balls.filter(b=>b.team===1&&b.alive).length,20,'#ffffff',900);
+      return;
+    }
     const eliminated=balls.filter(b=>!b.alive);
     const icons=Math.min(eliminated.length,8), start=VW/2-(icons*28+100)/2;
     eliminated.slice(0,8).forEach((b,i)=>{
@@ -1340,7 +1365,7 @@
       recorder.onerror=e=>{console.error('Recorder error',e);toast('Recording error. Try 720p or a different browser.');};
       recorder.start(1000);recording=true;
       $('recordBtn').hidden=true;$('stopBtn').hidden=false;$('recordingOverlay').hidden=false;
-      $('quality').disabled=true;$('duration').disabled=true;$('count').disabled=true;
+      $('battleMode').disabled=true;$('teamAColor').disabled=true;$('teamBColor').disabled=true;$('quality').disabled=true;$('duration').disabled=true;$('count').disabled=true;
       reset(true);
       toast('Recording started. Keep this tab visible until the battle finishes.');
     }catch(e){console.error(e);recording=false;setCanvasResolution(720);toast(`Recording could not start: ${e.message||'unknown browser issue'}`);}
@@ -1348,14 +1373,14 @@
   function stopRecording(){
     if(!recording)return;
     recording=false;$('recordBtn').hidden=false;$('stopBtn').hidden=true;$('recordingOverlay').hidden=true;
-    $('quality').disabled=false;$('duration').disabled=false;$('count').disabled=false;
+    $('battleMode').disabled=false;$('teamAColor').disabled=false;$('teamBColor').disabled=false;$('quality').disabled=false;$('duration').disabled=false;$('count').disabled=!!teamSize();
     setRunning(false);updateStats();
     if(musicAudio)musicAudio.pause();
     if(recorder?.state==='recording')recorder.stop();
   }
   function saveProject(){
     const cfg=config();
-    const data={version:20,settings:cfg,slots};
+    const data={version:20,settings:{...cfg,...teamSettings()},slots};
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=url;a.download='BallBattlee_Project.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),20000);toast('Project settings saved as JSON.');
   }
@@ -1365,6 +1390,7 @@
       const data=JSON.parse(await file.text());
       if(!Array.isArray(data.slots)||!data.slots.length||data.slots.length>12)throw new Error('Invalid player list');
       const s=data.settings||{};
+      restoreTeams(s);
       const set=(id,v)=>{if(v!==undefined&&v!==null){const el=$(id);el.value=String(v)}};
       set('headline',s.title);set('duration',s.duration);set('speed',s.speed);set('theme',s.theme);set('quality',s.quality);if([35,55,75,110].includes(Number(s.density)))set('density',s.density);
       if([1,2,3].includes(Number(s.cutDamage)))set('cutDamage',s.cutDamage);
@@ -1393,6 +1419,13 @@
   $('resetBtn').addEventListener('click',()=>{playUiSelect();reset();});
   $('recordBtn').addEventListener('click',()=>{playUiSelect();startRecording();});
   $('stopBtn').addEventListener('click',()=>{playUiSelect();stopRecording();});
+  $('battleMode').addEventListener('change',()=>{
+    if(recording)return;
+    const n=teamSize();$('count').disabled=!!n;
+    if(n){$('count').value=String(n*2);resizeSlots(n*2);}else reset();
+    scheduleAutoSave();
+  });
+  for(const id of ['teamAColor','teamBColor'])$(id).addEventListener('change',()=>{if(!recording)reset();scheduleAutoSave();});
   $('count').addEventListener('change',()=>{playUiSelect();if(recording)return;resizeSlots(Number($('count').value))});
   $('shufflePlayers').addEventListener('click',()=>{
     playUiSelect();
@@ -1471,6 +1504,7 @@
 
     if(saved && typeof saved === 'object'){
       const s=saved.settings||{};
+      restoreTeams(s);
       const set=(id,v)=>{if(v!==undefined&&v!==null&&$(id))$(id).value=String(v);};
       if(typeof s.title==='string')$('headline').value=s.title.slice(0,35);
       if([20,30,40,50,60].includes(Number(s.duration)))set('duration',s.duration);

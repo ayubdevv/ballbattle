@@ -1,0 +1,11 @@
+JAMOAVIY BATTLE
+
+index.html faylini Chrome yoki Edge orqali oching.
+Battle mode ichida Solo, 2 vs 2, 3 vs 3 yoki 4 vs 4 tanlang.
+Birinchi yarim o'yinchilar Team A, ikkinchi yarim Team B.
+Masalan 3v3: 1-3 A, 4-6 B. Ismlar va rasmlar odatdagi Contenders joyidan yuklanadi.
+Team A strings va Team B strings orqali jamoa ranglarini tanlang.
+Jamoadoshlar bir-birining ipini uzmaydi. Raqib jamoa to'liq chiqsa battle tugaydi.
+Yuqorida har ikkala jamoaning barcha rasmlari turadi. Chiqqan o'yinchi rasmi qizil X bilan belgilanadi.
+Jamoa rejimi va ranglari avtomatik va JSON loyihada saqlanadi.
+Shuffle o'yinchilarni qayta aralashtirib, jamoalar tarkibini ham o'zgartiradi.
